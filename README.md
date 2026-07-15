@@ -18,42 +18,94 @@ Learns compressed grammars from sequential data, then aligns new inputs against 
 
 Scoring objective: **T = G + E** (MDL). G charged once at insertion, E = bit cost of unmatched New symbols.
 
-## Usage
+## CLI usage
 
 ### Train
 
 ```bash
-cargo run --release -- normal_sequences.txt
+spma train normal_sequences.txt
 # saves ./spma_grammar.bin
 ```
 
-### Inference
-
 ```bash
-cargo run --release -- --no-learn test_input.txt
-# loads ./spma_grammar.bin, prints alignment table per line
-# [UNMATCHED:symbol] for unknown symbols, E > 0 triggers ANOMALY DETECTED banner
+spma train normal_sequences.txt --grammar /path/to/custom.bin
+spma train --verbose normal_sequences.txt   # print alignment tables during training
 ```
 
-### Custom grammar path
+### Infer
 
 ```bash
-cargo run --release -- --no-learn --grammar /path/to/custom.bin test_input.txt
+spma infer test_input.txt
+# loads ./spma_grammar.bin, prints OK/ANOMALY per line
+# exits 1 if any anomaly detected (E > 0)
 ```
 
-## Input format
+```bash
+spma infer test_input.txt --grammar /path/to/custom.bin
+spma infer --verbose test_input.txt   # print full alignment tables
+```
 
-One pattern per line, space-separated symbols:
+### Input format
+
+One sequence per line, space-separated symbols. Lines starting with `#` are ignored.
 
 ```
 TRIP_A BREAKER_OPEN UNDERVOLTAGE BACKUP_RELAY
-FAULT_B OVERCURRENT TRIP_B
-normal_start normal_op normal_end
+TRIP_B BREAKER_OPEN OVERCURRENT BACKUP_RELAY
+# this line is a comment
 ```
+
+Special symbol prefixes:
+
+| Prefix | Type | Example |
+|---|---|---|
+| `<` / `>` | Boundary markers | `< event >` |
+| `#` | Unique ID symbol | `#session_42` |
+| `!` | Identification symbol | `!admin` |
+| _(none)_ | Data symbol (default) | `BREAKER_OPEN` |
+
+## Library usage
+
+```rust
+use spma::Spma;
+
+let mut engine = Spma::new();
+engine.train(&[
+    vec!["TRIP_A", "BREAKER_OPEN", "UNDERVOLTAGE"],
+    vec!["TRIP_A", "BREAKER_OPEN", "OVERCURRENT"],
+])?;
+engine.save("grammar.bin")?;
+
+let engine = Spma::load("grammar.bin")?;
+let result = engine.infer(&["TRIP_A", "BREAKER_OPEN", "UNDERVOLTAGE"])?;
+
+println!("E={:.3}  CD={:+.3}  anomaly={}", result.e_cost, result.cd, result.is_anomaly);
+println!("{}", result.alignment);
+```
+
+`InferResult` fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `e_cost` | `f64` | Encoding cost of unmatched symbols (E in T=G+E) |
+| `cd` | `f64` | Compression difference; positive = grammar compresses the sequence |
+| `is_anomaly` | `bool` | `true` when `e_cost > 0` |
+| `unmatched` | `Vec<String>` | Symbol names not covered by any grammar pattern |
+| `alignment` | `String` | Human-readable alignment table |
+
+## Examples
+
+```bash
+cargo run --example fault_detection
+```
+
+`examples/fault_detection.rs` — trains on normal industrial fault sequences, saves grammar, loads it, then classifies a set of test inputs including unknown fault types and novel event streams.
 
 ## Use cases
 
 Industrial log anomaly detection (learn normal sequences, flag high-E inputs), protocol conformance checking (align captured traffic against spec patterns), and fault code classification (one grammar per class, pick minimum T). In all cases the alignment table is the explanation — no post-hoc attribution.
+
+**Known limitation**: beam search matches symbols by identity, not position — order violations are not detected unless the grammar contains ordered multi-symbol patterns. Use boundary markers (`<` / `>`) to give the grammar positional anchors.
 
 ## Features
 
@@ -65,24 +117,24 @@ Industrial log anomaly detection (learn normal sequences, flag high-E inputs), p
 | Staged beam search (SPMA core) | `src/beam.rs` | Monotonicity constraint enforced |
 | Learning loop with MDL gate | `src/engine.rs` | n-gram bootstrap + beam-driven extraction |
 | One-trial learning | `src/engine.rs` | Add-only store, no forgetting |
-| Alignment table printer | `src/engine.rs` | `[UNMATCHED:x]` for unknown symbols |
-| `--no-learn` inference mode | `src/main.rs` | Essential for anomaly detection |
-| Grammar persistence | `src/main.rs` | serde + bincode, `--grammar` flag |
+| Alignment table printer | `src/engine.rs` | Per-symbol coverage display |
+| Unknown symbol detection | `src/lib.rs` | Symbols absent from training → forced E > 0 |
+| Grammar persistence | `src/lib.rs` | serde + bincode |
 
 ## Architecture
 
 ```
 CLI (main.rs)
        ↓
+Spma API (lib.rs)
+       ↓
 Learning loop (engine.rs)
        ↓
 Beam search (beam.rs)
        ↓
-T=G+E scoring (lib.rs)
+T=G+E scoring (model.rs)
        ↓
 String interning: symbol → u32 (intern.rs)
-       ↓
-Data model: Pattern, Symbol, Alignment, Grammar (lib.rs)
 ```
 
 Key decisions — see [docs/architecture.md](docs/architecture.md):
@@ -91,7 +143,6 @@ Key decisions — see [docs/architecture.md](docs/architecture.md):
 - Multi-pattern simultaneous alignment (not pairwise — cross-pattern coverage drives compression gain)
 - Shannon bit costs: `cost(s) = -log2(freq/total)`, no tunable distortion factor
 
-
 ## Docs
 
 | File | Content |
@@ -99,12 +150,12 @@ Key decisions — see [docs/architecture.md](docs/architecture.md):
 | [docs/architecture.md](docs/architecture.md) | Scoring rationale, beam search, learning loop |
 | [docs/performance.md](docs/performance.md) | Possible improvements (only Phase A implemented) |
 
-
 ## Limitations
 
 - No numeric representation (Wolff acknowledged this gap; no solution exists)
 - No 2D patterns, probabilistic inference, or cognitive modeling
 - Not validated on real data yet
+- Order violations undetected without boundary markers or multi-symbol patterns
 - Performance cap ~1k patterns before Phases B–F (inverted index, parallel beam) are implemented
 
 ## References
