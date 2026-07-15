@@ -1,0 +1,327 @@
+//! SPMA — SP Multiple Alignment
+//!
+//! Symbolic sequential anomaly detection via T=G+E scoring.
+//! Learns grammars from discrete event sequences; detects anomalies when E > 0.
+//!
+//! # Quick Start
+//!
+//! ```no_run
+//! use spma::Spma;
+//!
+//! let mut engine = Spma::new();
+//! engine.train(&[
+//!     vec!["fault_A", "fault_B", "fault_C"],
+//!     vec!["fault_A", "fault_B", "fault_D"],
+//! ]).unwrap();
+//! engine.save("spma_grammar.bin").unwrap();
+//!
+//! let engine = Spma::load("spma_grammar.bin").unwrap();
+//! let result = engine.infer(&["fault_A", "fault_B", "fault_C"]).unwrap();
+//! println!("E={:.2}  CD={:+.2}  anomaly={}", result.e_cost, result.cd, result.is_anomaly);
+//! ```
+
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+
+pub mod intern;
+pub use intern::Interner;
+
+pub(crate) mod model;
+pub use model::{compute_t_ge, format_symbol};
+pub use model::{
+    Alignment, AlignmentElement, AlignmentType, Grammar, HitNode, Pattern, Symbol, SymbolStatus,
+    SymbolType,
+};
+
+pub(crate) mod beam;
+pub use beam::{beam_search, BeamAlignment};
+
+pub(crate) mod engine;
+pub use engine::{extract_learned_pattern, LearningResults, SpmaEngine};
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/// Result of inferring a single sequence against the learned grammar.
+#[derive(Debug, Clone)]
+pub struct InferResult {
+    /// Encoding cost of symbols not covered by the grammar (E in T=G+E).
+    pub e_cost: f64,
+    /// Compression difference: positive means the grammar compresses the sequence.
+    pub cd: f64,
+    /// True when E > 0 (unmatched symbols remain).
+    pub is_anomaly: bool,
+    /// Symbol names not covered by any grammar pattern.
+    pub unmatched: Vec<String>,
+    /// Human-readable alignment table.
+    pub alignment: String,
+}
+
+/// Serializable snapshot of the learned grammar for persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GrammarSnapshot {
+    old_patterns: Vec<Pattern>,
+    interner_names: Vec<String>,
+}
+
+/// Primary entry point for library users.
+pub struct Spma {
+    inner: SpmaEngine,
+}
+
+impl Default for Spma {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Spma {
+    pub fn new() -> Self {
+        Self {
+            inner: SpmaEngine::new(),
+        }
+    }
+
+    /// Train on a corpus of sequences. Each sequence is a slice of symbol name strings.
+    pub fn train(&mut self, sequences: &[Vec<&str>]) -> Result<()> {
+        let mut patterns = Vec::new();
+        for (i, seq) in sequences.iter().enumerate() {
+            let line = seq.join(" ");
+            let mut symbols = Vec::new();
+            for (pos, name) in seq.iter().enumerate() {
+                use crate::{SymbolStatus, SymbolType};
+                let (canonical_name, sym_type, sym_status) = match *name {
+                    "<" => ("<", SymbolType::LeftBracket, SymbolStatus::BoundaryMarker),
+                    ">" => (">", SymbolType::RightBracket, SymbolStatus::BoundaryMarker),
+                    n if n.starts_with('#') => {
+                        (n, SymbolType::UniqueIdSymbol, SymbolStatus::Identification)
+                    }
+                    n if n.starts_with('!') => (
+                        &n[1..],
+                        SymbolType::DataSymbol,
+                        SymbolStatus::Identification,
+                    ),
+                    n => (n, SymbolType::DataSymbol, SymbolStatus::Contents),
+                };
+                let id = self.inner.interner.intern(canonical_name);
+                let mut sym = Symbol::new(id);
+                sym.position = pos as i32;
+                sym.symbol_type = sym_type;
+                sym.status = sym_status;
+                symbols.push(sym);
+                self.inner.original_alphabet.insert(id);
+            }
+            if !symbols.is_empty() {
+                let pat = Pattern::new(symbols, self.inner.next_pattern_id);
+                self.inner.next_pattern_id += 1;
+                patterns.push(pat);
+            }
+            let _ = line;
+            let _ = i;
+        }
+        self.inner.learn(patterns)?;
+        Ok(())
+    }
+
+    /// Save learned grammar to a binary file.
+    pub fn save(&self, path: &str) -> Result<()> {
+        let snapshot = GrammarSnapshot {
+            old_patterns: self.inner.old_patterns.clone(),
+            interner_names: (0..self.inner.interner.len())
+                .map(|i| self.inner.interner.name(i as u32).to_owned())
+                .collect(),
+        };
+        let bytes =
+            bincode::serialize(&snapshot).map_err(|e| anyhow::anyhow!("bincode serialize: {e}"))?;
+        std::fs::write(path, bytes)?;
+        Ok(())
+    }
+
+    /// Load a previously saved grammar from a binary file.
+    pub fn load(path: &str) -> Result<Self> {
+        let bytes = std::fs::read(path)?;
+        let snapshot: GrammarSnapshot = bincode::deserialize(&bytes)
+            .map_err(|e| anyhow::anyhow!("bincode deserialize: {e}"))?;
+        let mut engine = Self::new();
+        for name in &snapshot.interner_names {
+            engine.inner.interner.intern(name);
+        }
+        engine.inner.old_patterns = snapshot.old_patterns;
+        Ok(engine)
+    }
+
+    /// Infer a single sequence against the learned grammar. Does not modify state.
+    pub fn infer(&self, sequence: &[&str]) -> Result<InferResult> {
+        let mut tmp_interner = self.inner.interner.clone();
+        let ids: Vec<u32> = sequence.iter().map(|&s| tmp_interner.intern(s)).collect();
+
+        let max_id = tmp_interner.len();
+        let mut costs = vec![0.0f64; max_id];
+        for p in &self.inner.old_patterns {
+            for s in &p.symbols {
+                if (s.name as usize) < max_id {
+                    costs[s.name as usize] = s.bit_cost;
+                }
+            }
+        }
+
+        let old_id_vecs: Vec<Vec<u32>> = self
+            .inner
+            .old_patterns
+            .iter()
+            .map(|p| p.symbols.iter().map(|s| s.name).collect())
+            .collect();
+
+        let best_opt = beam_search(&ids, &old_id_vecs, self.inner.keep_rows as usize, &costs)
+            .into_iter()
+            .next();
+
+        let (e_cost, cd, covered) = if let Some(ref b) = best_opt {
+            (b.e, b.cd, b.covered_new.clone())
+        } else {
+            let raw: f64 = ids
+                .iter()
+                .map(|&id| {
+                    if (id as usize) < costs.len() {
+                        costs[id as usize]
+                    } else {
+                        0.0
+                    }
+                })
+                .sum();
+            (raw, 0.0, vec![false; ids.len()])
+        };
+
+        let unmatched: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| !covered[i])
+            .map(|(_, &id)| tmp_interner.name(id).to_owned())
+            .collect();
+
+        let alignment_str = if let Some(ref best) = best_opt {
+            let new_syms: Vec<Symbol> = ids
+                .iter()
+                .enumerate()
+                .map(|(pos, &id)| {
+                    let mut s = Symbol::new(id);
+                    s.position = pos as i32;
+                    s
+                })
+                .collect();
+            let new_pat = Pattern::new(new_syms, 0);
+
+            let mut buf = Vec::new();
+            print_alignment_table_to_buf(
+                &new_pat,
+                best,
+                &self.inner.old_patterns,
+                &tmp_interner,
+                &mut buf,
+            );
+            String::from_utf8_lossy(&buf).into_owned()
+        } else {
+            format!("New:  {}\n(no alignment)\n", sequence.join("  "))
+        };
+
+        Ok(InferResult {
+            e_cost,
+            cd,
+            is_anomaly: e_cost > 0.0,
+            unmatched,
+            alignment: alignment_str,
+        })
+    }
+}
+
+fn print_alignment_table_to_buf(
+    new_pattern: &Pattern,
+    alignment: &BeamAlignment,
+    old_patterns: &[Pattern],
+    interner: &Interner,
+    buf: &mut Vec<u8>,
+) {
+    use std::fmt::Write as FmtWrite;
+    let mut out = String::new();
+
+    let new_syms: Vec<String> = new_pattern.get_symbol_names(interner);
+    let n = new_syms.len();
+    if n == 0 {
+        return;
+    }
+
+    let used_olds: Vec<(&Pattern, Vec<String>)> = alignment
+        .old_pattern_indices
+        .iter()
+        .filter_map(|&i| old_patterns.get(i))
+        .map(|p| (p, p.get_symbol_names(interner)))
+        .collect();
+
+    let mut assignment: Vec<Option<usize>> = vec![None; n];
+    for (row_idx, (_, old_names)) in used_olds.iter().enumerate() {
+        for (p, covered) in alignment.covered_new.iter().enumerate() {
+            if *covered && assignment[p].is_none() && old_names.contains(&new_syms[p]) {
+                assignment[p] = Some(row_idx);
+            }
+        }
+    }
+
+    let col_widths: Vec<usize> = (0..n)
+        .map(|p| {
+            let base = new_syms[p].len();
+            let old_max = used_olds
+                .iter()
+                .map(|(_, names)| {
+                    if names.contains(&new_syms[p]) {
+                        new_syms[p].len()
+                    } else {
+                        1
+                    }
+                })
+                .max()
+                .unwrap_or(1);
+            base.max(old_max) + 2
+        })
+        .collect();
+
+    let label_width = used_olds
+        .len()
+        .checked_sub(1)
+        .map(|last| format!("Old{}:", last + 1).len())
+        .unwrap_or(4)
+        .max("New:".len());
+
+    let _ = write!(out, "{:<width$}", "New:", width = label_width + 1);
+    for (p, sym) in new_syms.iter().enumerate() {
+        let _ = write!(out, "{:<width$}", sym, width = col_widths[p]);
+    }
+    out.push('\n');
+
+    for (row_idx, (_, old_names)) in used_olds.iter().enumerate() {
+        let label = format!("Old{}:", row_idx + 1);
+        let _ = write!(out, "{:<width$}", label, width = label_width + 1);
+        for (p, _) in new_syms.iter().enumerate() {
+            let cell = if alignment.covered_new[p] && assignment[p] == Some(row_idx) {
+                old_names
+                    .iter()
+                    .find(|&s| s == &new_syms[p])
+                    .cloned()
+                    .unwrap_or_else(|| " ".to_string())
+            } else if alignment.covered_new[p] && assignment[p].is_none() {
+                "-".to_string()
+            } else {
+                " ".to_string()
+            };
+            let _ = write!(out, "{:<width$}", cell, width = col_widths[p]);
+        }
+        let _ = writeln!(out, " [{}]", old_names.join(" "));
+    }
+
+    let matched = alignment.covered_new.iter().filter(|&&c| c).count();
+    let _ = writeln!(
+        out,
+        "\nMatched: {}/{}  G={:.1} bits  E={:.1} bits  T={:.1} bits  CD={:+.1} bits",
+        matched, n, alignment.g, alignment.e, alignment.t, alignment.cd
+    );
+
+    buf.extend_from_slice(out.as_bytes());
+}
