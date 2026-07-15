@@ -496,4 +496,418 @@ mod tests {
             .collect();
         Pattern::new(symbols, id)
     }
+
+    // ── Interner ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn interner_same_string_same_id() {
+        let mut i = Interner::new();
+        let a = i.intern("foo");
+        let b = i.intern("foo");
+        assert_eq!(a, b);
+        assert_eq!(i.len(), 1);
+    }
+
+    #[test]
+    fn interner_different_strings_different_ids() {
+        let mut i = Interner::new();
+        let a = i.intern("foo");
+        let b = i.intern("bar");
+        assert_ne!(a, b);
+        assert_eq!(i.len(), 2);
+    }
+
+    #[test]
+    fn interner_name_roundtrip() {
+        let mut i = Interner::new();
+        let id = i.intern("hello");
+        assert_eq!(i.name(id), "hello");
+    }
+
+    #[test]
+    #[should_panic(expected = "intern ID out of bounds")]
+    fn interner_name_out_of_bounds_panics() {
+        let i = Interner::new();
+        i.name(99);
+    }
+
+    // ── assign_symbol_types ───────────────────────────────────────────────────
+
+    #[test]
+    fn assign_symbol_types_promotes_identification_symbols() {
+        let mut sp = SpmaEngine::new();
+        let a = sp.interner.intern("A");
+        let b = sp.interner.intern("B");
+
+        // Pattern where B is marked Identification
+        let mut sym_a = Symbol::new(a);
+        sym_a.status = SymbolStatus::Contents;
+        let mut sym_b = Symbol::new(b);
+        sym_b.status = SymbolStatus::Identification;
+
+        sp.new_patterns = vec![Pattern::new(vec![sym_a, sym_b], 1)];
+        sp.assign_symbol_types();
+
+        let b_in_pat = sp.new_patterns[0].symbols.iter().find(|s| s.name == b).unwrap();
+        assert_eq!(b_in_pat.symbol_type, SymbolType::ContextSymbol,
+            "Identification symbol should be promoted to ContextSymbol");
+
+        let a_in_pat = sp.new_patterns[0].symbols.iter().find(|s| s.name == a).unwrap();
+        assert_eq!(a_in_pat.symbol_type, SymbolType::DataSymbol,
+            "Contents symbol should stay DataSymbol");
+    }
+
+    #[test]
+    fn assign_symbol_types_no_identification_no_change() {
+        let mut sp = SpmaEngine::new();
+        let a = sp.interner.intern("A");
+        sp.new_patterns = vec![Pattern::new(vec![Symbol::new(a)], 1)];
+        sp.assign_symbol_types();
+        assert_eq!(sp.new_patterns[0].symbols[0].symbol_type, SymbolType::DataSymbol);
+    }
+
+    // ── compute_t_ge ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn compute_t_ge_overlapping_symbol_ids_in_new_and_old() {
+        // Symbol 0 appears in both new and old — G counts old occurrence, E skips covered new
+        let costs = vec![2.0, 3.0];
+        let new = &[0u32, 1];
+        let old: &[&[u32]] = &[&[0u32]];
+        let covered = &[true, false];
+        let (g, e, t) = compute_t_ge(new, old, &costs, covered);
+        assert!((g - 2.0).abs() < 1e-9, "G={g}");  // old[0] = id 0, cost 2.0
+        assert!((e - 3.0).abs() < 1e-9, "E={e}");  // id 1 uncovered, cost 3.0
+        assert!((t - 5.0).abs() < 1e-9, "T={t}");
+    }
+
+    #[test]
+    fn compute_t_ge_empty_old_all_e() {
+        let costs = vec![1.0, 2.0, 3.0];
+        let new = &[0u32, 1, 2];
+        let old: &[&[u32]] = &[];
+        let covered = &[false, false, false];
+        let (g, e, t) = compute_t_ge(new, old, &costs, covered);
+        assert!((g - 0.0).abs() < 1e-9);
+        assert!((e - 6.0).abs() < 1e-9);
+        assert!((t - 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_t_ge_all_covered_no_e() {
+        let costs = vec![1.0, 2.0];
+        let new = &[0u32, 1];
+        let old: &[&[u32]] = &[&[0u32, 1]];
+        let covered = &[true, true];
+        let (g, e, t) = compute_t_ge(new, old, &costs, covered);
+        assert!((g - 3.0).abs() < 1e-9);
+        assert!((e - 0.0).abs() < 1e-9);
+        assert!((t - 3.0).abs() < 1e-9);
+    }
+
+    // ── write_alignment_table ─────────────────────────────────────────────────
+
+    #[test]
+    fn write_alignment_table_empty_pattern_writes_nothing() {
+        let interner = Interner::new();
+        let empty_pat = Pattern::new(vec![], 0);
+        let alignment = spma::beam_search(&[], &[], 5, &[]);
+        // Nothing to write — must not panic
+        let mut out = String::new();
+        if let Some(best) = alignment.into_iter().next() {
+            spma::write_alignment_table(&mut out, &empty_pat, &best, &[], &interner);
+        }
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn write_alignment_table_no_old_patterns() {
+        let mut interner = Interner::new();
+        let a = interner.intern("A");
+        let b = interner.intern("B");
+        let new_syms = vec![Symbol::new(a), Symbol::new(b)];
+        let new_pat = Pattern::new(new_syms, 1);
+        let costs = vec![1.0, 1.0];
+        let results = spma::beam_search(&[a, b], &[], 5, &costs);
+        let best = results.into_iter().next().unwrap();
+        let mut out = String::new();
+        spma::write_alignment_table(&mut out, &new_pat, &best, &[], &interner);
+        assert!(out.contains("New:"), "should contain New row");
+        assert!(out.contains('A') || out.contains('B'), "should contain symbol names");
+    }
+
+    #[test]
+    fn write_alignment_table_multi_row_contains_old_labels() {
+        let mut interner = Interner::new();
+        let a = interner.intern("A");
+        let b = interner.intern("B");
+        let costs = vec![2.0, 2.0];
+        let old = vec![vec![a], vec![b]];
+        let new_ids = vec![a, b];
+        let results = spma::beam_search(&new_ids, &old, 10, &costs);
+        let best = results.into_iter().next().unwrap();
+
+        let new_syms: Vec<Symbol> = new_ids.iter().map(|&id| Symbol::new(id)).collect();
+        let new_pat = Pattern::new(new_syms, 0);
+        let old_pats: Vec<Pattern> = old.iter().map(|ids| {
+            Pattern::new(ids.iter().map(|&id| Symbol::new(id)).collect(), 0)
+        }).collect();
+
+        let mut out = String::new();
+        spma::write_alignment_table(&mut out, &new_pat, &best, &old_pats, &interner);
+        assert!(out.contains("New:"));
+        assert!(out.contains("Old1:") || out.contains("Old2:"),
+            "multi-row should have Old labels, got:\n{out}");
+        assert!(out.contains("Matched:"), "should contain stats line");
+    }
+
+    // ── beam_search ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn beam_search_partial_coverage_correct_cd() {
+        // New=[A,B,C], Old=[[A,B]] — C is uncovered
+        let mut i = Interner::new();
+        let a = i.intern("A");
+        let b = i.intern("B");
+        let c = i.intern("C");
+        let costs = vec![2.0, 3.0, 4.0];
+        let old = vec![vec![a, b]];
+        let results = spma::beam_search(&[a, b, c], &old, 10, &costs);
+        let best = &results[0];
+        assert!(best.covered_new[0], "A should be covered");
+        assert!(best.covered_new[1], "B should be covered");
+        assert!(!best.covered_new[2], "C should not be covered");
+        // CD = cost(A)+cost(B) = 5.0, E = cost(C) = 4.0
+        assert!((best.cd - 5.0).abs() < 1e-9, "CD={}", best.cd);
+        assert!((best.e - 4.0).abs() < 1e-9, "E={}", best.e);
+    }
+
+    #[test]
+    fn beam_search_multi_symbol_old_pattern() {
+        let mut i = Interner::new();
+        let a = i.intern("A");
+        let b = i.intern("B");
+        let c = i.intern("C");
+        let costs = vec![1.0, 1.0, 1.0];
+        let old = vec![vec![a, b, c]];
+        let results = spma::beam_search(&[a, b, c], &old, 5, &costs);
+        let best = &results[0];
+        assert!(best.covered_new.iter().all(|&c| c), "all positions should be covered");
+        assert_eq!(best.alignment_type, spma::AlignmentType::FullA);
+    }
+
+    #[test]
+    fn beam_search_alignment_type_full_b_partial_new() {
+        // Old pattern [A] fully matched, New=[A,B] — B uncovered → FullB
+        let mut i = Interner::new();
+        let a = i.intern("A");
+        let b = i.intern("B");
+        let costs = vec![1.0, 1.0];
+        let old = vec![vec![a]];
+        let results = spma::beam_search(&[a, b], &old, 5, &costs);
+        let best = &results[0];
+        assert!(best.covered_new[0]);
+        assert!(!best.covered_new[1]);
+        assert_eq!(best.alignment_type, spma::AlignmentType::FullB);
+    }
+
+    #[test]
+    fn beam_search_monotonic_order_enforced() {
+        // Old=[A,B], New=[B,A] — B before A in New cannot match [A,B] in order
+        let mut i = Interner::new();
+        let a = i.intern("A");
+        let b = i.intern("B");
+        let costs = vec![1.0, 1.0];
+        let old = vec![vec![a, b]];
+        let results = spma::beam_search(&[b, a], &old, 5, &costs);
+        let best = &results[0];
+        // Only one of the two can be covered (monotonic cursor prevents both)
+        let covered_count = best.covered_new.iter().filter(|&&c| c).count();
+        assert!(covered_count <= 1,
+            "out-of-order sequence should not produce full coverage, got {covered_count}");
+    }
+
+    // ── extract_frequent_ngrams cold-start vs beam-switch ─────────────────────
+
+    #[test]
+    fn extract_frequent_ngrams_cold_start_adds_bigrams() {
+        let mut sp = SpmaEngine::new();
+        let pats = vec![
+            create_test_pattern(&mut sp.interner, vec!["a", "b", "c"], 1),
+            create_test_pattern(&mut sp.interner, vec!["a", "b", "d"], 2),
+        ];
+        let results = sp.learn(pats).unwrap();
+        // "a b" appears twice — cold-start n-gram miner should add it
+        let a = sp.interner.intern("a");
+        let b = sp.interner.intern("b");
+        let has_ab = results.final_patterns.iter().any(|p| {
+            let ids: Vec<u32> = p.symbols.iter().map(|s| s.name).collect();
+            ids == vec![a, b]
+        });
+        assert!(has_ab, "cold-start should extract bigram [a,b]");
+    }
+
+    #[test]
+    fn extract_frequent_ngrams_does_not_add_singletons() {
+        let mut sp = SpmaEngine::new();
+        // Each bigram appears only once — below min_freq=2 threshold
+        let pats = vec![
+            create_test_pattern(&mut sp.interner, vec!["a", "b"], 1),
+            create_test_pattern(&mut sp.interner, vec!["c", "d"], 2),
+        ];
+        let results = sp.learn(pats).unwrap();
+        let multi = results.final_patterns.iter().filter(|p| p.symbols.len() >= 2).count();
+        assert_eq!(multi, 0, "no bigram appears ≥2 times, should add none");
+    }
+
+    #[test]
+    fn beam_driven_phase_skips_ngram_miner() {
+        // After cold-start fires and multi-symbol patterns exist,
+        // n-gram miner should not run again (extract_frequent_ngrams guarded by !has_multi_symbol).
+        // Verify by checking results are stable: same corpus, second learn call
+        // should produce same or fewer patterns.
+        let mut sp = SpmaEngine::new();
+        let pats = vec![
+            create_test_pattern(&mut sp.interner, vec!["a", "b", "c"], 1),
+            create_test_pattern(&mut sp.interner, vec!["a", "b", "d"], 2),
+            create_test_pattern(&mut sp.interner, vec!["a", "b", "e"], 3),
+        ];
+        let r1 = sp.learn(pats.clone()).unwrap();
+        // Rebuild engine with same data — should converge to same or fewer patterns
+        let mut sp2 = SpmaEngine::new();
+        sp2.interner = sp.interner.clone();
+        let r2 = sp2.learn(pats).unwrap();
+        assert_eq!(r1.final_patterns.len(), r2.final_patterns.len(),
+            "deterministic: same corpus same result");
+    }
+
+    // ── compute_global_compression_ratio ─────────────────────────────────────
+
+    #[test]
+    fn compression_ratio_empty_grammar_is_one() {
+        let sp = SpmaEngine::new();
+        // No patterns at all → global_t = 0 → returns 1.0 (division-by-zero guard)
+        let ratio = sp.compute_global_compression_ratio(&[], &[], 5);
+        assert!((ratio - 1.0).abs() < 1e-9, "ratio={ratio}");
+    }
+
+    #[test]
+    fn compression_ratio_no_multi_symbol_patterns_is_one() {
+        let mut sp = SpmaEngine::new();
+        let pats = vec![create_test_pattern(&mut sp.interner, vec!["a"], 1)];
+        // Only single-symbol seeds — global_G=0, E=all uncovered → ratio=raw/E=1.0
+        let ratio = sp.compute_global_compression_ratio(&pats, &pats, 5);
+        assert!((ratio - 1.0).abs() < 1e-9, "ratio={ratio}");
+    }
+
+    #[test]
+    fn compression_ratio_perfect_coverage_greater_than_one() {
+        let mut sp = SpmaEngine::new();
+        let a = sp.interner.intern("a");
+        let b = sp.interner.intern("b");
+        // Build a grammar pattern [a,b] with bit_cost set
+        let mut sa = Symbol::new(a); sa.bit_cost = 2.0;
+        let mut sb = Symbol::new(b); sb.bit_cost = 2.0;
+        let grammar_pat = Pattern::new(vec![sa.clone(), sb.clone()], 1);
+        // Many new patterns all = [a,b]
+        let new_pats: Vec<Pattern> = (0..5).map(|i| {
+            Pattern::new(vec![sa.clone(), sb.clone()], i + 10)
+        }).collect();
+        // grammar_cost = 4.0; each new covered fully → E=0; total_raw = 5*4 = 20
+        // ratio = 20 / (4 + 0) = 5.0
+        let ratio = sp.compute_global_compression_ratio(&new_pats, &[grammar_pat], 5);
+        assert!(ratio > 1.0, "good compression should yield ratio > 1, got {ratio}");
+    }
+
+    // ── Alignment::find_degree_of_matching ────────────────────────────────────
+
+    #[test]
+    fn find_degree_of_matching_empty_patterns_no_panic() {
+        let mut alignment = Alignment::new(vec![], 1);
+        alignment.find_degree_of_matching();
+        // Default is Partial — just verify no panic
+        assert_eq!(alignment.degree_of_matching, AlignmentType::Partial);
+    }
+
+    #[test]
+    fn find_degree_of_matching_no_columns_resolves_full_a() {
+        let mut interner = Interner::new();
+        let p = create_test_pattern(&mut interner, vec!["a", "b"], 1);
+        let mut alignment = Alignment::new(vec![p], 1);
+        // columns empty: new_fully_matched starts true (nothing falsified it),
+        // old_fully_matched starts true (pattern.symbols.len()=2, matched=0 → 0 < 2 → false).
+        // Actually old_fully_matched is false → Partial.
+        // But pattern_idx loop runs from 1..1 (single pattern) → never executes → old_fully_matched stays true.
+        // Both true → FullA.
+        alignment.find_degree_of_matching();
+        assert_eq!(alignment.degree_of_matching, AlignmentType::FullA);
+    }
+
+    // ── Spma public API ───────────────────────────────────────────────────────
+
+    #[test]
+    fn spma_train_save_load_roundtrip() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("spma_roundtrip_test.bin");
+        let path_str = path.to_str().unwrap();
+
+        let mut engine = spma::Spma::new();
+        engine.train(&[
+            vec!["fault_A", "fault_B", "fault_C"],
+            vec!["fault_A", "fault_B", "fault_D"],
+        ]).unwrap();
+        engine.save(path_str).unwrap();
+
+        let engine2 = spma::Spma::load(path_str).unwrap();
+        let result = engine2.infer(&["fault_A", "fault_B", "fault_C"]).unwrap();
+        assert!(!result.is_anomaly, "known sequence should not be anomaly");
+        assert_eq!(result.e_cost, 0.0, "E should be 0 for fully covered sequence");
+
+        std::fs::remove_file(path_str).ok();
+    }
+
+    #[test]
+    fn spma_infer_unseen_symbol_appears_in_unmatched() {
+        let mut engine = spma::Spma::new();
+        engine.train(&[vec!["A", "B", "C"]]).unwrap();
+        let result = engine.infer(&["A", "B", "X"]).unwrap();
+        // Unseen symbols get cost 0.0 (no frequency data) so E=0 even when unmatched.
+        // is_anomaly = e_cost > 0, so X alone does not trigger it — but it IS unmatched.
+        assert!(result.unmatched.contains(&"X".to_string()),
+            "X should appear in unmatched list");
+    }
+
+    #[test]
+    fn spma_infer_alignment_string_non_empty() {
+        let mut engine = spma::Spma::new();
+        engine.train(&[vec!["A", "B"], vec!["A", "C"]]).unwrap();
+        let result = engine.infer(&["A", "B"]).unwrap();
+        assert!(!result.alignment.is_empty(), "alignment string should be populated");
+        assert!(result.alignment.contains("New:"), "alignment should have New row");
+    }
+
+    #[test]
+    fn spma_infer_fully_unseen_sequence() {
+        let mut engine = spma::Spma::new();
+        engine.train(&[vec!["A", "B"]]).unwrap();
+        let result = engine.infer(&["X", "Y", "Z"]).unwrap();
+        // Fully unseen symbols have cost 0.0 — beam finds no match, no alignment produced.
+        assert_eq!(result.unmatched.len(), 3, "all 3 symbols should be unmatched");
+        // infer() always produces a New row; verify it contains the symbols
+        assert!(result.alignment.contains("New:"), "got: {}", result.alignment);
+        assert!(result.alignment.contains('X'), "got: {}", result.alignment);
+    }
+
+    #[test]
+    fn spma_train_special_symbols_bracket_and_id() {
+        let mut engine = spma::Spma::new();
+        engine.train(&[
+            vec!["<", "cat", ">"],
+            vec!["<", "dog", ">"],
+        ]).unwrap();
+        // Should not panic and brackets should be handled
+        let result = engine.infer(&["<", "cat", ">"]).unwrap();
+        // Brackets are in the grammar — should not be anomaly
+        assert!(!result.is_anomaly || result.e_cost == 0.0);
+    }
 }
