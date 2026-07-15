@@ -529,8 +529,6 @@ impl SpmaEngine {
         Ok(LearningResults {
             cycles: total_cycles,
             final_patterns: self.old_patterns.clone(),
-            alignments: vec![],
-            grammars: vec![],
             symbol_frequencies: string_frequencies,
             original_alphabet_size: self.original_alphabet.len(),
             final_alphabet_size: self.symbol_frequencies.len(),
@@ -816,8 +814,6 @@ fn compute_total_t_for_patterns(
 pub struct LearningResults {
     pub cycles: u32,
     pub final_patterns: Vec<Pattern>,
-    pub alignments: Vec<Alignment>,
-    pub grammars: Vec<Grammar>,
     pub symbol_frequencies: HashMap<String, u32>,
     pub original_alphabet_size: usize,
     pub final_alphabet_size: usize,
