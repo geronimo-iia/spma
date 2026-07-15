@@ -70,14 +70,21 @@ fault types, OK for known sequences once grammar stabilises).
 
 ## 2. `max_cycles` hard cap truncates learning prematurely
 
-**Status:** Open — moderate. Observable only after issue #1 is fixed (grammar can grow).
+**Status:** Open — low. Severity reduced after issue #1 fix.
 
 **Theory says:** Iterate until T stops decreasing. No cycle limit exists in Wolff's formulation.
 Convergence is defined purely by the MDL objective.
 
-**Implementation does:** `learn()` at `src/engine.rs:493` breaks the loop when
-`total_cycles >= self.max_cycles` (default 10). On a large or varied corpus, 10 cycles may
-not be enough for the grammar to converge — learning halts while T is still decreasing.
+**Implementation does:** `learn()` at `src/engine.rs:505` breaks the loop when
+`total_cycles >= self.max_cycles` (default 10). The primary exit condition (`!any_improvement
+&& !old_grew && !added_this_cycle`) is now honest (convergence check uses `compute_total_e_dp`
+consistently). For simple corpora the loop exits naturally before hitting the cap. But on large
+or varied corpora with many distinct shared substructures, 10 cycles may not be enough —
+learning halts while T is still decreasing.
+
+**Reduced severity note:** Before issue #1 was fixed, the loop falsely converged in 1–2 cycles
+every time (beam-based T reported E≈0 with singletons). The cap was always hit but irrelevant.
+Now the cap is only reached when learning genuinely needs more iterations.
 
 **Prompt for fix:**
 
