@@ -1,172 +1,156 @@
 # Known Issues
 
-Three confirmed deviations from Wolff's SP theory, discovered via theory-vs-implementation audit
-(2026-07-16). Issues are ordered by fix dependency: #1 must be fixed before #2 can be validated,
-and both before #3 is meaningful.
+Discovered via theory-vs-implementation audit (2026-07-16) and example-driven testing.
 
-## 1. ~~Single-symbol patterns in grammar — theory violation that blocks multi-symbol learning~~ **RESOLVED**
+## 5. Multi-pattern stitching defeats global order detection
 
-**Resolution (2026-07-16):** Removed singleton seeding block (`engine.rs:318–329`). Grammar now
-starts empty; n-gram cold-start miner bootstraps it from repeated contiguous bigrams. Convergence
-check switched from `compute_total_t_for_patterns` (beam-based, inconsistent) to
-`compute_total_e_dp`-based T (consistent with MDL gate). Dead function `compute_total_t_for_patterns`
-deleted. 57 tests pass; 2 new tests verify multi-symbol grammar formation and order-sensitivity.
-Example `fault_detection` now produces real multi-symbol grammar patterns.
+**Status:** Partially mitigated (2026-07-16) — intra-pattern interleaving blocked; inter-pattern
+reordering open. Two fix strategies documented below; neither yet implemented.
 
----
+### Context
 
-## ~~1.~~ (archived) Single-symbol patterns in grammar — theory violation that blocks multi-symbol learning
+SP theory (Wolff) operates at multiple levels of abstraction simultaneously. The current
+implementation is a **level-1** system: atomic symbols form patterns, patterns cover New
+sequences. This is sufficient for detecting unknown symbols and missing structure. It is
+insufficient for detecting **reorderings** of known structure.
 
-**Status:** Open — architectural. Root cause of issues #2 and #3 being unobservable.
+The beam operates symbol-by-symbol, left-to-right on New. It has no concept of "pattern X
+should precede pattern Y." Each Old pattern is matched independently. Because beam processing
+is inherently left-to-right, a New sequence `[C, D, A, B]` covered by patterns `[C,D]` and
+`[A,B]` looks identical to `[A, B, C, D]` from the beam's perspective — both patterns start
+at a position ≥ the current frontier, so `max_covered_new` (partial fix) is trivially
+satisfied in both cases.
 
-**Theory says:** Individual symbols are atomic alphabet elements, implicit throughout the system.
-An SP-pattern is by definition an array of multiple symbols. The Old store holds grammar patterns,
-not alphabet atoms. (Wolff: *"each SP-pattern is an array of atomic SP-symbols"*.)
+**Partial fix applied:** `max_covered_new` in `PartialAlignment` blocks a pattern from
+starting at a New position that was already passed. This catches mid-stream interleaving
+(pattern 2 starting before pattern 1 finishes) but cannot detect whole-sequence reorderings
+because the patterns always encounter the frontier in left-to-right order regardless of
+training order.
 
-**Implementation does:** `learn()` at `src/engine.rs:318–329` explicitly seeds `old_patterns`
-with one length-1 pattern per unique symbol before the learning loop starts. These singleton
-patterns make E=0 for any known-symbol input immediately, so the MDL gate permanently rejects
-every multi-symbol candidate (adding `[A,B]` raises G by `cost(A)+cost(B)` but cannot reduce
-E which is already 0). Grammar is stuck at singletons forever.
+**Root cause:** The ordering constraint is a property of the *grammar* — specifically, the
+relationship between patterns. The beam only knows individual patterns. Fixing this requires
+lifting ordering knowledge out of the beam and into the grammar representation.
 
-**Downstream effects:**
-- Order violations undetectable (E=0 for any permutation of known symbols)
-- `beam_search` span-matching issue (#3) is unobservable — no multi-symbol patterns exist to test against
-- `max_cycles` premature termination (#2) may mask itself — loop exits "converged" when nothing can change
+### Fix A — Post-beam ordering penalty (pragmatic, limited to 2 levels)
 
-**Prompt for fix:**
+After beam alignment, extract the sequence of Old patterns used, ordered by their starting
+New position. Compare against the dominant ordering observed during training (recorded as
+pairwise counts: "in training, pattern i started before pattern j in N of M sequences").
+Pairs whose inference order contradicts the dominant training order contribute a penalty to
+a separate `e_order: f64` field in `InferResult`.
 
-```
-In src/engine.rs, learn():
-
-The block at lines 318–329 seeds old_patterns with one length-1 pattern per unique symbol.
-This violates SP theory (individual symbols are alphabet atoms, not grammar entries) and
-causes the MDL gate to permanently reject all multi-symbol candidates.
-
-Remove the singleton seeding block entirely (lines 318–329 and the apply_symbol_costs call
-at line 331 that follows it).
-
-The alphabet is already tracked in self.inner.original_alphabet (lib.rs) for unknown-symbol
-detection — no information is lost.
-
-After removal:
-  1. The n-gram cold-start miner (extract_frequent_ngrams) must bootstrap the grammar from
-     scratch. It already does this — verify it runs and inserts multi-symbol patterns.
-  2. Bit costs: collect_frequencies builds costs from old_patterns + new_patterns. With no
-     singletons in old_patterns, initial costs come from new_patterns alone — this is correct
-     (corpus frequencies, not grammar frequencies).
-  3. E will be > 0 for all inputs until multi-symbol patterns form. This is correct behavior.
-  4. Unknown-symbol detection (original_alphabet check in lib.rs) is unaffected.
-
-Tests to add:
-  - Train on ["A","B","C"] × 5; assert at least one old_pattern has len() >= 2.
-  - Train on ["A","B","C"] × 5; infer ["C","B","A"]; assert is_anomaly=true.
-  - Existing tests may break if they assumed E=0 for known sequences — audit and fix
-    expected values to reflect the corrected behavior.
-
-Verify examples/fault_detection.rs still produces sensible output (anomaly for unknown
-fault types, OK for known sequences once grammar stabilises).
-```
-
-## 2. `max_cycles` hard cap truncates learning prematurely
-
-**Status:** Open — low. Severity reduced after issue #1 fix.
-
-**Theory says:** Iterate until T stops decreasing. No cycle limit exists in Wolff's formulation.
-Convergence is defined purely by the MDL objective.
-
-**Implementation does:** `learn()` at `src/engine.rs:505` breaks the loop when
-`total_cycles >= self.max_cycles` (default 10). The primary exit condition (`!any_improvement
-&& !old_grew && !added_this_cycle`) is now honest (convergence check uses `compute_total_e_dp`
-consistently). For simple corpora the loop exits naturally before hitting the cap. But on large
-or varied corpora with many distinct shared substructures, 10 cycles may not be enough —
-learning halts while T is still decreasing.
-
-**Reduced severity note:** Before issue #1 was fixed, the loop falsely converged in 1–2 cycles
-every time (beam-based T reported E≈0 with singletons). The cap was always hit but irrelevant.
-Now the cap is only reached when learning genuinely needs more iterations.
-
-**Prompt for fix:**
+**Implementation:**
 
 ```
-In src/engine.rs, learn() and SpmaEngine::new():
+Training side (engine.rs, after convergence):
+  pattern_order: HashMap<(u32, u32), (u32, u32)>
+  //              (pat_i_id, pat_j_id) → (count_i_before_j, count_j_before_i)
+  For each training sequence, run beam, extract pattern start positions,
+  record pairwise orderings.
 
-The loop at lines 486–495 breaks on total_cycles >= self.max_cycles (default 10).
-This is not in Wolff's theory. The correct termination condition is T stops decreasing.
+Inference side (lib.rs, infer()):
+  After beam, sort used patterns by starting New position.
+  For each adjacent pair (or all pairs), look up pattern_order.
+  If inference order contradicts dominant training order by > threshold:
+    e_order += log_odds_penalty(count_expected, count_observed)
 
-Options:
-  A) Remove max_cycles entirely. Use only the T-convergence and no-improvement checks
-     already present (lines 487–491). Risk: runaway on adversarial input.
-  B) Keep max_cycles as a safety valve but raise the default to 1000 and document
-     that it should never be the binding constraint in normal use.
-
-Recommendation: Option B. A cycle cap is a reasonable safeguard; the problem is the
-default of 10, not the mechanism.
-
-Steps:
-  1. Change default max_cycles from 10 to 1000 in SpmaEngine::new().
-  2. Add a log/eprintln warning if termination was due to max_cycles (not convergence),
-     so users know learning was truncated.
-  3. Add a test: construct a corpus that requires > 10 cycles to converge; assert the
-     grammar contains patterns that would only appear after cycle 11+.
-
-Note: fix issue #1 first. With singletons blocking multi-symbol patterns, the loop
-converges in 1–2 cycles regardless of max_cycles, so this issue is unobservable until #1
-is resolved.
+InferResult gains:
+  e_order: f64                          // ordering anomaly cost
+  ordering_violations: Vec<(String, String)>  // pattern name pairs
 ```
 
-## 3. Beam search matches symbols scatter-style — span contiguity not enforced
+**Pros:** No beam changes. Clean separation. Calibrated via log-odds.
 
-**Status:** Open — architectural. Unobservable until issue #1 is fixed.
+**Cons:**
+- Strictly 2-level. Pattern sequences are compared but the patterns themselves have no
+  ordering relative to their internal symbols. A 3-level reordering (symbols within
+  sub-sequences, sub-sequences within sequences, sequences within episodes) requires
+  3 separate penalty layers, each added manually.
+- `e_cost` and `e_order` are different quantities with different units — combining them
+  into a single anomaly score requires an arbitrary weighting.
+- Pairwise pattern ordering is fragile when the grammar contains many short patterns:
+  a 4-symbol sequence covered by 4 bigrams produces 6 pairs with uncertain ordering
+  statistics, especially on small corpora.
 
-**Theory says:** SP-multiple-alignment aligns contiguous spans of New against contiguous spans
-of Old. A multi-symbol Old pattern `[A, B, C]` should only match a contiguous block `A B C`
-in New — the symbols must appear adjacent and in order. The alignment is a set of column
-bindings between New positions and Old positions; each Old pattern occupies a contiguous
-column range.
+### Fix B — Grammar-level sequence patterns (theoretically correct, full N levels)
 
-**Implementation does:** `beam_search` in `src/beam.rs` matches one symbol of New per beam
-step. The monotonicity constraint (`can_extend`, line 57) only prevents an Old pattern's
-cursor from going backwards within that pattern — it does not require the matched New
-positions to be contiguous. A pattern `[A, B]` can match `A` at New position 0 and `B` at
-New position 5, with unrelated symbols at positions 1–4. This is scatter-matching, not
-span-matching.
+Extend the grammar to hold patterns-of-patterns. After level-1 learning converges, run a
+**level-2 learning pass**: treat each training sequence as a sequence of pattern IDs (the
+patterns that covered it at level 1), and run the same n-gram miner + MDL gate + beam on
+those ID sequences. The result is level-2 patterns — ordered sequences of level-1 pattern
+references. Recurse to level 3 if needed.
 
-**Consequence:** once issue #1 is fixed and multi-symbol patterns form, the beam will
-incorrectly allow non-contiguous matches, inflating coverage (E artificially low) and
-producing alignment tables that don't correspond to valid SP-multiple-alignments.
+This is what SP theory specifies. Wolff: *"SP-multiple-alignment works at all levels of
+a processing hierarchy using the same mechanism."* Ordering is not a special case — it is
+a coverage failure at the next level up, caught by the same beam.
 
-**Prompt for fix:**
+**Structural change to `Symbol`:**
+
+```rust
+// Current
+pub struct Symbol { pub name: u32, ... }  // name = atomic symbol ID
+
+// Required
+pub enum SymbolRef {
+    Atom(u32),     // atomic symbol
+    Pattern(u32),  // reference to an Old pattern ID
+}
+pub struct Symbol { pub name: SymbolRef, ... }
+```
+
+**`learn()` gains a second phase:**
 
 ```
-In src/beam.rs, PartialAlignment and beam_search():
+Phase 1 (current): atomic symbols → old_patterns (level-1 grammar)
+Phase 2 (new):
+  For each training sequence:
+    Run beam with level-1 grammar → get pattern coverage sequence [P3, P7, P2, ...]
+  Treat [P3, P7, P2, ...] as a new "pattern-ID sequence"
+  Run same n-gram miner + MDL gate on pattern-ID sequences
+  Result: level-2 patterns, e.g. [[P3, P7], [P2, P5]] → level-2 old_patterns
+Phase 3+ (optional): recurse on level-2 pattern-ID sequences
+```
 
-The monotonicity constraint (can_extend, line 57) prevents an Old pattern from matching
-backwards but does not require contiguous New positions. A pattern [A, B] can match
-A at New[0] and B at New[5], which violates SP theory's span-contiguity requirement.
+**Beam becomes recursive:** When beam encounters a `SymbolRef::Pattern(id)`, it
+recursively aligns the corresponding New sub-sequence against the referenced pattern.
+Coverage at level N implies coverage at level N+1.
 
-Fix: when extending a match for old pattern `oi` at new position `new_pos`, require
-that new_pos == last_new_pos_for_oi + 1 (or new_pos == 0 for the first match).
+**Pros:**
+- Full N-level ordering. Arbitrarily deep hierarchy.
+- No separate penalty mechanism — ordering violation IS an E cost, in the same units,
+  with the same semantics as symbol-level E.
+- Self-similar: same algorithm, same MDL gate, same beam at every level.
+- Grammar grows to represent actual structure (sub-sequences, episodes, etc.).
 
-Data structure change needed:
-  - PartialAlignment currently tracks old_cursors: HashMap<usize, usize> (old_idx → old_pos).
-  - Add new_cursors: HashMap<usize, usize> (old_idx → last_matched_new_pos).
-  - In extend_match: before accepting, check
-      new_cursors.get(old_idx).map_or(true, |&prev_new| new_pos == prev_new + 1)
-  - Update new_cursors on accept.
+**Cons:**
+- Major redesign. `Symbol`, `beam_search`, `learn()`, `GrammarSnapshot`, `infer()` all change.
+- Level-2 beam needs level-1 beam as a subroutine — inference cost multiplies.
+- Small corpora may not produce stable level-2 patterns (MDL gate rejects if pattern-ID
+  sequences are too varied).
+- `grammar_size()`, alignment table printing, and all existing tests need updating.
 
-Edge case: the FIRST symbol of an Old pattern matched against New can start at any New
-position (no contiguity requirement for the start). Contiguity is only required for
-subsequent symbols of the same Old pattern.
+### Recommendation
 
-After fix:
-  - A pattern [A, B, C] can only match "A B C" as a block, not "A ... B ... C".
-  - Alignment tables will be more sparse (higher E) but more semantically correct.
-  - Add a test: old = [[A, B]], new = [A, X, B]; assert covered = [true, false, false]
-    (B at position 2 is NOT covered because it's not contiguous with A at position 0).
-  - Add a test: old = [[A, B]], new = [A, B, C]; assert covered = [true, true, false].
+Fix A for an immediate pragmatic gain with minimal code change. Fix B for a correct
+implementation that aligns with SP theory and handles arbitrary depth. They are not
+mutually exclusive — Fix A can be removed once Fix B is implemented, since Fix B subsumes it.
 
-Note: this is the largest of the three fixes — it changes the core beam scoring logic.
-Fix issues #1 and #2 first and validate that multi-symbol grammars form correctly before
-tackling this one.
+
+### Tests to add (Fix A)
+
+```
+- Train on [[A,B,C,D]]×10. Grammar learns [A,B] and [C,D].
+  Infer [C,D,A,B] → e_order > 0, e_cost == 0.
+  Infer [A,B,C,D] → e_order == 0, e_cost == 0.
+
+- Train on [[A,B],[C,D]]×10 and [[C,D],[A,B]]×10 (mixed order corpus).
+  Infer [C,D,A,B] → e_order ≈ 0 (no dominant order).
+```
+
+### Tests to add (Fix B)
+
+```
+- After level-2 learning, grammar_level2_size() > 0.
+- Infer [C,D,A,B] when trained on [A,B,C,D]×10 → is_anomaly=true, E > 0.
+- Infer [A,B,C,D] → is_anomaly=false, E == 0.
 ```
