@@ -133,32 +133,18 @@ pub fn print_alignment_table(
 pub struct SpmaEngine {
     pub interner: Interner,
 
-    pub patterns: Vec<Pattern>,
     pub old_patterns: Vec<Pattern>,
     pub new_patterns: Vec<Pattern>,
-    pub alignments: Vec<Alignment>,
-    pub parsing_alignments: Vec<Alignment>,
-    pub grammars: Vec<Grammar>,
-    pub hit_structure: Vec<HitNode>,
 
     pub symbol_frequencies: HashMap<u32, u32>,
-    pub symbol_types_in_old: HashMap<u32, Symbol>,
     pub original_alphabet: HashSet<u32>,
 
     pub next_pattern_id: u32,
-    pub next_alignment_id: u32,
-    pub next_grammar_id: u32,
-    pub next_hit_node_id: u32,
 
     pub verbose: bool,
 
-    // Parameters
-    pub cost_factor: f64,
-    pub fail_score: f64,
     pub max_cycles: u32,
     pub keep_rows: u32,
-    pub combination_limit: u32,
-    pub max_alignments_per_cycle: usize,
 }
 
 impl Default for SpmaEngine {
@@ -176,27 +162,14 @@ impl SpmaEngine {
     pub fn new() -> Self {
         Self {
             interner: Interner::new(),
-            patterns: Vec::new(),
             old_patterns: Vec::new(),
             new_patterns: Vec::new(),
-            alignments: Vec::new(),
-            parsing_alignments: Vec::new(),
-            grammars: Vec::new(),
-            hit_structure: Vec::new(),
             symbol_frequencies: HashMap::new(),
-            symbol_types_in_old: HashMap::new(),
             original_alphabet: HashSet::new(),
             next_pattern_id: 1,
-            next_alignment_id: 1,
-            next_grammar_id: 1,
-            next_hit_node_id: 1,
             verbose: false,
-            cost_factor: 2.0,
-            fail_score: -10.0,
             max_cycles: 10,
             keep_rows: 5,
-            combination_limit: 10,
-            max_alignments_per_cycle: 50,
         }
     }
 
@@ -296,60 +269,6 @@ impl SpmaEngine {
         }
     }
 
-    pub fn assign_symbol_status(&mut self) {
-        // Work with indices to avoid borrowing conflicts
-        let pattern_count = self.old_patterns.len();
-
-        for pattern_idx in 0..pattern_count {
-            let _pattern_id = self.old_patterns[pattern_idx].pattern_id;
-            let symbol_count = self.old_patterns[pattern_idx].symbols.len();
-
-            for i in 0..symbol_count {
-                self.old_patterns[pattern_idx].symbols[i].status = SymbolStatus::Identification;
-
-                if self.is_pattern_unique_by_index(pattern_idx, i) {
-                    break;
-                }
-            }
-
-            // Mark remaining symbols as CONTENTS
-            let mut found_contents = false;
-            for symbol in &mut self.old_patterns[pattern_idx].symbols {
-                if found_contents || symbol.status == SymbolStatus::Contents {
-                    symbol.status = SymbolStatus::Contents;
-                    found_contents = true;
-                }
-            }
-        }
-    }
-
-    fn is_pattern_unique_by_index(&self, pattern_idx: usize, end_index: usize) -> bool {
-        let pattern = &self.old_patterns[pattern_idx];
-        let prefix: Vec<u32> = pattern.symbols[..=end_index]
-            .iter()
-            .map(|s| s.name)
-            .collect();
-
-        for (other_idx, other_pattern) in self.old_patterns.iter().enumerate() {
-            if other_idx == pattern_idx {
-                continue;
-            }
-
-            if other_pattern.symbols.len() > end_index {
-                let other_prefix: Vec<u32> = other_pattern.symbols[..=end_index]
-                    .iter()
-                    .map(|s| s.name)
-                    .collect();
-
-                if prefix == other_prefix {
-                    return false;
-                }
-            }
-        }
-
-        true
-    }
-
     pub fn calculate_symbol_frequencies(&mut self, patterns: &[Pattern]) {
         self.symbol_frequencies.clear();
         collect_frequencies(&mut self.symbol_frequencies, patterns);
@@ -357,96 +276,6 @@ impl SpmaEngine {
 
     pub fn assign_symbol_costs(&mut self, patterns: &mut [Pattern]) {
         apply_symbol_costs(&self.symbol_frequencies, patterns);
-    }
-
-    /// Builds hit structure between a driving pattern and target patterns.
-    ///
-    /// Finds matching symbols between patterns and creates hit nodes
-    /// representing potential alignment points.
-    ///
-    /// # Arguments
-    ///
-    /// * `driving_pattern` - The pattern to match against
-    /// * `target_patterns` - Patterns to find matches in
-    ///
-    /// # Returns
-    ///
-    /// Vector of hit nodes sorted by compression difference.
-    pub fn build_hit_structure(
-        &self,
-        driving_pattern: &Pattern,
-        target_patterns: &[Pattern],
-    ) -> Vec<HitNode> {
-        let mut hit_nodes = Vec::new();
-
-        for target_pattern in target_patterns {
-            let nodes = self.find_hits(driving_pattern, target_pattern);
-            hit_nodes.extend(nodes);
-        }
-
-        hit_nodes.sort_by(|a, b| {
-            b.compression_difference
-                .partial_cmp(&a.compression_difference)
-                .unwrap()
-        });
-        hit_nodes
-    }
-
-    fn find_hits(&self, driving_pattern: &Pattern, target_pattern: &Pattern) -> Vec<HitNode> {
-        let _ = (driving_pattern, target_pattern);
-        // TODO: replace with proper bit-cost lookup before building HitNodes
-        Vec::new()
-    }
-
-    pub fn select_alignments(&mut self, mut alignments: Vec<Alignment>) -> Vec<Alignment> {
-        alignments.sort_by(|a, b| {
-            b.compression_difference
-                .partial_cmp(&a.compression_difference)
-                .unwrap()
-        });
-
-        let selected = alignments
-            .into_iter()
-            .take(self.max_alignments_per_cycle)
-            .collect::<Vec<_>>();
-
-        for alignment in &selected {
-            for pattern in &alignment.patterns {
-                if let Some(p) = self.find_pattern_by_id_mut(pattern.pattern_id) {
-                    p.keep = true;
-                }
-            }
-        }
-
-        selected
-    }
-
-    fn find_pattern_by_id_mut(&mut self, pattern_id: u32) -> Option<&mut Pattern> {
-        self.old_patterns
-            .iter_mut()
-            .chain(self.new_patterns.iter_mut())
-            .find(|p| p.pattern_id == pattern_id)
-    }
-
-    // TODO(Phase 5): implement pattern extraction from alignments.
-    // Currently a stub — old_patterns does not grow until this is implemented.
-    pub fn extract_patterns_from_alignments(&self, _alignments: &[Alignment]) -> Vec<Pattern> {
-        Vec::new()
-    }
-
-    pub fn evaluate_grammars<'a>(
-        &mut self,
-        grammars: &'a mut [Grammar],
-        corpus: &[Pattern],
-    ) -> Option<&'a Grammar> {
-        for grammar in grammars.iter_mut() {
-            grammar.compute_encoding_size(corpus);
-            grammar.compute_total_score();
-        }
-
-        grammars
-            .iter()
-            .min_by(|a, b| a.total_score.partial_cmp(&b.total_score).unwrap())
     }
 
     pub fn run_recognition_cycle_beam(&mut self, new_pattern: &Pattern) -> Option<BeamAlignment> {
@@ -474,38 +303,6 @@ impl SpmaEngine {
 
         let alignments = beam_search(&new_ids, &old_id_vecs, self.keep_rows as usize, &costs);
         alignments.into_iter().next()
-    }
-
-    pub fn run_recognition_cycle(&mut self, new_pattern: &Pattern) -> Result<bool> {
-        if self.verbose {
-            println!(
-                "\nProcessing pattern {}: {}",
-                new_pattern.pattern_id,
-                new_pattern.get_symbol_names(&self.interner).join(" ")
-            );
-        }
-
-        let hit_nodes = self.build_hit_structure(new_pattern, &self.old_patterns);
-
-        if hit_nodes.is_empty() {
-            if self.verbose {
-                println!("No hits found");
-            }
-            return Ok(false);
-        }
-
-        if self.verbose {
-            println!("Found {} hit nodes", hit_nodes.len());
-        }
-
-        let selected_alignments = self.select_alignments(vec![]);
-        if self.verbose {
-            println!("Selected {} alignments", selected_alignments.len());
-        }
-
-        self.parsing_alignments.extend(selected_alignments);
-
-        Ok(true)
     }
 
     pub fn learn(&mut self, input_patterns: Vec<Pattern>) -> Result<LearningResults> {
@@ -732,7 +529,7 @@ impl SpmaEngine {
         Ok(LearningResults {
             cycles: total_cycles,
             final_patterns: self.old_patterns.clone(),
-            alignments: self.parsing_alignments.clone(),
+            alignments: vec![],
             grammars: vec![],
             symbol_frequencies: string_frequencies,
             original_alphabet_size: self.original_alphabet.len(),

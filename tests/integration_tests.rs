@@ -63,9 +63,9 @@ mod tests {
     #[test]
     fn test_spma_initialization() {
         let sp = SpmaEngine::new();
-        assert_eq!(sp.cost_factor, 2.0);
-        assert_eq!(sp.max_alignments_per_cycle, 50);
         assert_eq!(sp.next_pattern_id, 1);
+        assert_eq!(sp.keep_rows, 5);
+        assert_eq!(sp.max_cycles, 10);
     }
 
     #[test]
@@ -81,18 +81,6 @@ mod tests {
         let sat_id = sp.interner.intern("sat");
         assert_eq!(sp.symbol_frequencies.get(&cat_id), Some(&2));
         assert_eq!(sp.symbol_frequencies.get(&sat_id), Some(&1));
-    }
-
-    #[test]
-    fn test_hit_structure_building() {
-        let mut sp = SpmaEngine::new();
-        let pattern1 = create_test_pattern(&mut sp.interner, vec!["the", "cat", "sat"], 1);
-        let pattern2 = create_test_pattern(&mut sp.interner, vec!["the", "dog", "sat"], 2);
-
-        let hits = sp.build_hit_structure(&pattern1, &[pattern2]);
-
-        // Test that the function runs without error
-        let _ = hits;
     }
 
     #[test]
@@ -141,7 +129,6 @@ mod tests {
     #[test]
     fn test_learning_cycle() {
         let mut sp = SpmaEngine::new();
-        sp.max_alignments_per_cycle = 5; // Limit for test
 
         let patterns = vec![
             create_test_pattern(&mut sp.interner, vec!["cat", "sat"], 1),
