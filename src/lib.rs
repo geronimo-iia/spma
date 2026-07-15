@@ -28,10 +28,7 @@ pub use intern::Interner;
 
 pub(crate) mod model;
 pub use model::{compute_t_ge, format_symbol};
-pub use model::{
-    Alignment, AlignmentElement, AlignmentType, Grammar, HitNode, Pattern, Symbol, SymbolStatus,
-    SymbolType,
-};
+pub use model::{AlignmentType, Pattern, Symbol, SymbolStatus, SymbolType};
 
 pub(crate) mod beam;
 pub use beam::{beam_search, BeamAlignment};

@@ -84,22 +84,6 @@ mod tests {
     }
 
     #[test]
-    fn test_grammar_creation() {
-        let mut interner = Interner::new();
-        let patterns = vec![
-            create_test_pattern(&mut interner, vec!["cat", "sat"], 1),
-            create_test_pattern(&mut interner, vec!["dog", "ran"], 2),
-        ];
-
-        let mut grammar = Grammar::new(1, patterns);
-        assert_eq!(grammar.grammar_id, 1);
-        assert_eq!(grammar.patterns.len(), 2);
-
-        grammar.compute_grammar_size();
-        assert!(grammar.grammar_size >= 0.0);
-    }
-
-    #[test]
     fn test_pattern_input_parsing() {
         let mut sp = SpmaEngine::new();
 
@@ -817,30 +801,6 @@ mod tests {
         // ratio = 20 / (4 + 0) = 5.0
         let ratio = sp.compute_global_compression_ratio(&new_pats, &[grammar_pat], 5);
         assert!(ratio > 1.0, "good compression should yield ratio > 1, got {ratio}");
-    }
-
-    // ── Alignment::find_degree_of_matching ────────────────────────────────────
-
-    #[test]
-    fn find_degree_of_matching_empty_patterns_no_panic() {
-        let mut alignment = Alignment::new(vec![], 1);
-        alignment.find_degree_of_matching();
-        // Default is Partial — just verify no panic
-        assert_eq!(alignment.degree_of_matching, AlignmentType::Partial);
-    }
-
-    #[test]
-    fn find_degree_of_matching_no_columns_resolves_full_a() {
-        let mut interner = Interner::new();
-        let p = create_test_pattern(&mut interner, vec!["a", "b"], 1);
-        let mut alignment = Alignment::new(vec![p], 1);
-        // columns empty: new_fully_matched starts true (nothing falsified it),
-        // old_fully_matched starts true (pattern.symbols.len()=2, matched=0 → 0 < 2 → false).
-        // Actually old_fully_matched is false → Partial.
-        // But pattern_idx loop runs from 1..1 (single pattern) → never executes → old_fully_matched stays true.
-        // Both true → FullA.
-        alignment.find_degree_of_matching();
-        assert_eq!(alignment.degree_of_matching, AlignmentType::FullA);
     }
 
     // ── Spma public API ───────────────────────────────────────────────────────

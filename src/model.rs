@@ -74,27 +74,6 @@ pub fn format_symbol(sym: &Symbol, interner: &Interner) -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AlignmentElement {
-    pub symbol: Option<Symbol>,
-    pub original_pattern_id: Option<u32>,
-    pub same_column_above: i32,
-    pub same_column_below: i32,
-    pub original_position: i32,
-}
-
-impl Default for AlignmentElement {
-    fn default() -> Self {
-        Self {
-            symbol: None,
-            original_pattern_id: None,
-            same_column_above: -1,
-            same_column_below: -1,
-            original_position: -1,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pattern {
     pub symbols: Vec<Symbol>,
     pub pattern_id: u32,
@@ -156,131 +135,6 @@ impl Pattern {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Alignment {
-    pub patterns: Vec<Pattern>,
-    pub alignment_id: u32,
-    pub columns: Vec<Vec<AlignmentElement>>,
-    pub compression_ratio: f64,
-    pub compression_difference: f64,
-    pub encoding_cost: f64,
-    pub new_symbols_cost: f64,
-    pub degree_of_matching: AlignmentType,
-    pub leaf_node_id: i32,
-}
-
-impl Alignment {
-    pub fn new(patterns: Vec<Pattern>, alignment_id: u32) -> Self {
-        Self {
-            patterns,
-            alignment_id,
-            columns: Vec::new(),
-            compression_ratio: 0.0,
-            compression_difference: 0.0,
-            encoding_cost: 0.0,
-            new_symbols_cost: 0.0,
-            degree_of_matching: AlignmentType::Partial,
-            leaf_node_id: -1,
-        }
-    }
-
-    pub fn find_degree_of_matching(&mut self) {
-        if self.patterns.is_empty() {
-            return;
-        }
-
-        let mut new_fully_matched = true;
-        let mut old_fully_matched = true;
-
-        for col in &self.columns {
-            if !col.is_empty() && col[0].symbol.is_some() {
-                let has_match = col[1..].iter().any(|elem| {
-                    elem.symbol
-                        .as_ref()
-                        .is_some_and(|s| col[0].symbol.as_ref().unwrap().matches(s))
-                });
-                if !has_match {
-                    new_fully_matched = false;
-                }
-            }
-        }
-
-        for pattern_idx in 1..self.patterns.len() {
-            let pattern = &self.patterns[pattern_idx];
-            let mut pattern_symbols_matched = 0;
-
-            for col in &self.columns {
-                if pattern_idx < col.len()
-                    && col[pattern_idx].symbol.is_some()
-                    && col[pattern_idx].same_column_above >= 0
-                {
-                    pattern_symbols_matched += 1;
-                }
-            }
-
-            if pattern_symbols_matched < pattern.symbols.len() {
-                old_fully_matched = false;
-            }
-        }
-
-        self.degree_of_matching = match (new_fully_matched, old_fully_matched) {
-            (true, true) => AlignmentType::FullA,
-            (false, true) => AlignmentType::FullB,
-            (_, false) => AlignmentType::Partial,
-        };
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HitNode {
-    pub node_id: u32,
-    pub driving_pattern_id: u32,
-    pub target_pattern_id: u32,
-    pub driving_symbol: Symbol,
-    pub target_symbol: Symbol,
-    pub driving_position: usize,
-    pub target_position: usize,
-    pub compression_difference: f64,
-    pub compression_ratio: f64,
-    pub children: Vec<u32>,
-    pub parent: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Grammar {
-    pub grammar_id: u32,
-    pub patterns: Vec<Pattern>,
-    pub grammar_size: f64,
-    pub encoding_size: f64,
-    pub total_score: f64,
-}
-
-impl Grammar {
-    pub fn new(grammar_id: u32, patterns: Vec<Pattern>) -> Self {
-        let mut grammar = Self {
-            grammar_id,
-            patterns,
-            grammar_size: 0.0,
-            encoding_size: 0.0,
-            total_score: 0.0,
-        };
-        grammar.compute_grammar_size();
-        grammar
-    }
-
-    pub fn compute_grammar_size(&mut self) {
-        self.grammar_size = self.patterns.iter().map(|p| p.compute_total_cost()).sum();
-    }
-
-    pub fn compute_encoding_size(&mut self, corpus_patterns: &[Pattern]) {
-        self.encoding_size = corpus_patterns.iter().map(|p| p.compute_total_cost()).sum();
-    }
-
-    pub fn compute_total_score(&mut self) {
-        self.total_score = self.grammar_size + self.encoding_size;
-    }
-}
-
 /// Compute the T=G+E decomposition for a multiple alignment.
 pub fn compute_t_ge(
     new_pattern: &[u32],
@@ -339,14 +193,6 @@ mod tests {
         ];
         let pattern = Pattern::new(symbols, 1);
         assert!(pattern.has_brackets());
-    }
-
-    #[test]
-    fn test_alignment_element_default() {
-        let element = AlignmentElement::default();
-        assert!(element.symbol.is_none());
-        assert_eq!(element.same_column_above, -1);
-        assert_eq!(element.same_column_below, -1);
     }
 
     #[test]
