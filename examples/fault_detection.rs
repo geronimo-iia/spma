@@ -37,9 +37,12 @@ fn main() -> anyhow::Result<()> {
             vec!["TRIP_B", "BREAKER_OPEN", "OVERCURRENT", "BACKUP_RELAY"],
         ),
         (
-            // Beam search matches symbols by identity, not position — order violations
-            // are NOT detected unless the grammar contains ordered multi-symbol patterns.
-            "OK (order violation undetected — beam is order-agnostic)",
+            // Span contiguity is enforced per-pattern, but multiple grammar patterns can
+            // each contribute contiguous spans that together cover a reordered input.
+            // A single pattern [TRIP_A, BREAKER_OPEN] cannot scatter-match, but
+            // [TRIP_B BREAKER_OPEN] covers pos 0 and [TRIP_A BREAKER_OPEN] covers pos 1 —
+            // two valid contiguous matches, wrong order still scores E=0.
+            "OK (order violation undetected — multi-pattern stitching covers reordered input)",
             vec!["BREAKER_OPEN", "TRIP_A", "UNDERVOLTAGE", "BACKUP_RELAY"],
         ),
         (
@@ -47,7 +50,9 @@ fn main() -> anyhow::Result<()> {
             vec!["TRIP_A", "BREAKER_OPEN", "GROUNDFAULT", "BACKUP_RELAY"],
         ),
         (
-            "Anomaly — missing relay",
+            // All 3 symbols appear in grammar patterns → E=0, not detected.
+            // Sequence-length anomalies require boundary markers (< >) to be detectable.
+            "False negative: missing relay (not detected — all symbols individually known)",
             vec!["TRIP_A", "BREAKER_OPEN", "UNDERVOLTAGE"],
         ),
         (

@@ -18,6 +18,10 @@ pub struct BeamAlignment {
 #[derive(Debug, Clone)]
 struct PartialAlignment {
     old_cursors: HashMap<usize, usize>,
+    // Tracks the last matched New position per old pattern — enforces span contiguity.
+    new_cursors: HashMap<usize, usize>,
+    // Highest New position covered by any Old pattern — enforces inter-pattern ordering.
+    max_covered_new: usize,
     covered_new: Vec<bool>,
     covered_cost: f64,
     cd: f64,
@@ -27,6 +31,8 @@ impl PartialAlignment {
     fn new(new_len: usize) -> Self {
         Self {
             old_cursors: HashMap::new(),
+            new_cursors: HashMap::new(),
+            max_covered_new: 0,
             covered_new: vec![false; new_len],
             covered_cost: 0.0,
             cd: 0.0,
@@ -50,14 +56,36 @@ impl PartialAlignment {
         // G for existing grammar patterns is 0 (cost was paid at insertion time).
         // CD = covered_cost: bits saved by not encoding matched symbols raw.
         next.old_cursors.insert(old_idx, old_pos);
+        next.new_cursors.insert(old_idx, new_pos);
+        if new_pos > next.max_covered_new {
+            next.max_covered_new = new_pos;
+        }
         next.cd = next.covered_cost;
         next
     }
 
-    fn can_extend(&self, old_idx: usize, old_pos: usize) -> bool {
+    // `new_pos` is needed to enforce span contiguity for subsequent symbols of the same
+    // Old pattern. First symbol of a pattern can start at any New position; thereafter
+    // each successive symbol must be at exactly prev_new_pos + 1.
+    // Single-symbol patterns (old_pos == prev_old == 0) may re-match at non-contiguous
+    // New positions — contiguity only applies when advancing within a multi-symbol pattern.
+    // Inter-pattern ordering: first symbol of a NEW pattern (not yet in old_cursors) must
+    // start at new_pos >= max_covered_new (patterns consumed left-to-right in New).
+    fn can_extend(&self, old_idx: usize, old_pos: usize, new_pos: usize) -> bool {
         match self.old_cursors.get(&old_idx) {
-            Some(&prev) => old_pos >= prev,
-            None => true,
+            Some(&prev_old) => {
+                if old_pos > prev_old {
+                    // Advancing to next symbol in multi-symbol pattern → New must be contiguous.
+                    self.new_cursors
+                        .get(&old_idx)
+                        .map_or(true, |&prev_new| new_pos == prev_new + 1)
+                } else {
+                    // old_pos == prev_old: single-symbol re-use at a new New position.
+                    old_pos >= prev_old
+                }
+            }
+            // First symbol of this Old pattern: enforce inter-pattern ordering.
+            None => new_pos >= self.max_covered_new,
         }
     }
 
@@ -170,7 +198,7 @@ pub fn beam_search(
             // Option B: match against old patterns
             if let Some(matches) = symbol_to_old.get(&sym) {
                 for &(oi, q) in matches {
-                    if candidate.can_extend(oi, q) {
+                    if candidate.can_extend(oi, q, p) {
                         next_candidates.push(candidate.extend_match(oi, q, p, sym_cost));
                     }
                 }
@@ -224,5 +252,73 @@ mod tests {
         assert!(!results.is_empty());
         let best = &results[0];
         assert!(best.covered_new[0]);
+    }
+
+    #[test]
+    fn span_contiguity_non_contiguous_gap_not_covered() {
+        // old = [[A, B]], new = [A, X, B]
+        // B is at new[2], but A matched at new[0] → next must be new[1], not new[2].
+        // B at new[2] must NOT be covered.
+        // IDs: A=0, X=1, B=2
+        let new = vec![0u32, 1, 2];
+        let old = vec![vec![0u32, 2u32]]; // [A, B]
+        let costs = vec![1.0, 1.0, 1.0];
+        let results = beam_search(&new, &old, 10, &costs);
+        let best = &results[0];
+        // A at new[0] may be covered (first symbol, any start OK)
+        // B at new[2] must NOT be covered (gap at new[1])
+        assert!(
+            !best.covered_new[2],
+            "B at new[2] must not be covered: gap between A(new[0]) and B(new[2])"
+        );
+    }
+
+    #[test]
+    fn span_contiguity_contiguous_pair_both_covered() {
+        // old = [[A, B]], new = [A, B, C]
+        // A at new[0], B at new[1] → contiguous → both covered. C uncovered.
+        // IDs: A=0, B=1, C=2
+        let new = vec![0u32, 1, 2];
+        let old = vec![vec![0u32, 1u32]]; // [A, B]
+        let costs = vec![1.0, 1.0, 1.0];
+        let results = beam_search(&new, &old, 10, &costs);
+        let best = &results[0];
+        assert!(best.covered_new[0], "A at new[0] should be covered");
+        assert!(best.covered_new[1], "B at new[1] should be covered");
+        assert!(!best.covered_new[2], "C at new[2] should not be covered");
+    }
+
+    #[test]
+    fn inter_pattern_order_correct_order_fully_covered() {
+        // old = [[A, B], [C, D]], new = [A, B, C, D]
+        // Patterns in correct New-order → E = 0.
+        // IDs: A=0, B=1, C=2, D=3
+        let new = vec![0u32, 1, 2, 3];
+        let old = vec![vec![0u32, 1u32], vec![2u32, 3u32]];
+        let costs = vec![1.0, 1.0, 1.0, 1.0];
+        let results = beam_search(&new, &old, 20, &costs);
+        let best = &results[0];
+        assert_eq!(best.e, 0.0, "correct order: all symbols must be covered");
+        assert!(best.covered_new.iter().all(|&c| c));
+    }
+
+    #[test]
+    fn inter_pattern_order_interleaved_rejected() {
+        // old = [[A, B], [C, D]], new = [A, C, B, D]
+        // [A,B] can start at new[0] (A). Then [C,D] would need to start >= 0 — C is at new[1] >= 0 OK.
+        // But then [A,B] needs B at new[2] which is contiguous with A at new[0]? No: new[2] != new[0]+1.
+        // Span contiguity (Issue #3) blocks B at new[2] for [A,B] that started at new[0].
+        // [C,D] can match C at new[1], then D must be at new[2] — but new[2]=B not D → blocked.
+        // Net result: at most one symbol covered per pattern → E > 0.
+        // IDs: A=0, B=1, C=2, D=3; new order: A C B D
+        let new = vec![0u32, 2, 1, 3];
+        let old = vec![vec![0u32, 1u32], vec![2u32, 3u32]];
+        let costs = vec![1.0, 1.0, 1.0, 1.0];
+        let results = beam_search(&new, &old, 20, &costs);
+        let best = &results[0];
+        assert!(
+            best.e > 0.0,
+            "interleaved pattern: must not fully cover [A,C,B,D] with [A,B] and [C,D]"
+        );
     }
 }

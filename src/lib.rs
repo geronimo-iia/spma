@@ -58,6 +58,7 @@ pub struct InferResult {
 struct GrammarSnapshot {
     old_patterns: Vec<Pattern>,
     interner_names: Vec<String>,
+    corpus_costs: Vec<f64>,
 }
 
 /// Primary entry point for library users.
@@ -76,6 +77,14 @@ impl Spma {
         Self {
             inner: SpmaEngine::new(),
         }
+    }
+
+    pub fn set_max_cycles(&mut self, n: u32) {
+        self.inner.max_cycles = n;
+    }
+
+    pub fn grammar_size(&self) -> usize {
+        self.inner.old_patterns.iter().filter(|p| p.symbols.len() >= 2).count()
     }
 
     /// Train on a corpus of sequences. Each sequence is a slice of symbol name strings.
@@ -126,6 +135,7 @@ impl Spma {
             interner_names: (0..self.inner.interner.len())
                 .map(|i| self.inner.interner.name(i as u32).to_owned())
                 .collect(),
+            corpus_costs: self.inner.corpus_costs.clone(),
         };
         let bytes =
             bincode::serialize(&snapshot).map_err(|e| anyhow::anyhow!("bincode serialize: {e}"))?;
@@ -143,10 +153,10 @@ impl Spma {
             engine.inner.interner.intern(name);
         }
         engine.inner.old_patterns = snapshot.old_patterns;
-        for p in &engine.inner.old_patterns {
-            for s in &p.symbols {
-                engine.inner.original_alphabet.insert(s.name);
-            }
+        engine.inner.corpus_costs = snapshot.corpus_costs;
+        // All interned names were seen during training → all belong to original_alphabet.
+        for i in 0..engine.inner.interner.len() {
+            engine.inner.original_alphabet.insert(i as u32);
         }
         Ok(engine)
     }
@@ -184,6 +194,13 @@ impl Spma {
                 if (s.name as usize) < max_id {
                     costs[s.name as usize] = s.bit_cost;
                 }
+            }
+        }
+        // Fall back to corpus costs for symbols present during training but not in any
+        // grammar pattern (which would otherwise cost 0, masking uncovered symbols).
+        for (id, &cc) in self.inner.corpus_costs.iter().enumerate() {
+            if id < max_id && costs[id] == 0.0 && cc > 0.0 {
+                costs[id] = cc;
             }
         }
 

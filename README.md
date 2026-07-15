@@ -97,15 +97,21 @@ println!("{}", result.alignment);
 
 ```bash
 cargo run --example fault_detection
+cargo run --example ordered_sequences
 ```
 
 `examples/fault_detection.rs` — trains on normal industrial fault sequences, saves grammar, loads it, then classifies a set of test inputs including unknown fault types and novel event streams.
+
+`examples/ordered_sequences.rs` — demonstrates what the engine can and cannot detect: unknown symbols (always flagged), order violations (detected with homogeneous corpus; weaker with varied corpus), missing/extra symbols, and known zero-cost limitations.
 
 ## Use cases
 
 Industrial log anomaly detection (learn normal sequences, flag high-E inputs), protocol conformance checking (align captured traffic against spec patterns), and fault code classification (one grammar per class, pick minimum T). In all cases the alignment table is the explanation — no post-hoc attribution.
 
-**Known limitation**: beam search matches symbols by identity, not position — order violations are not detected unless the grammar contains ordered multi-symbol patterns. Use boundary markers (`<` / `>`) to give the grammar positional anchors.
+**Known limitations**: see [docs/known-issues.md](docs/known-issues.md) for full details.
+- Order violations: detected when grammar patterns span the full sequence (homogeneous corpus). Multi-pattern stitching can still cover full-sequence reorderings when the grammar is varied — see Issue #5 for two documented fix strategies.
+- Boundary markers (`<` / `>`) do not improve order detection — ubiquitous in every sequence → Shannon cost ≈ 0 → no anomaly signal.
+- Zero-cost symbols at inference: resolved (Issue #4). Symbols in training corpus but not absorbed into grammar now fall back to corpus Shannon costs; uncovered symbols contribute E > 0.
 
 ## Features
 
@@ -114,12 +120,14 @@ Industrial log anomaly detection (learn normal sequences, flag high-E inputs), p
 | String interning (symbol → u32 ID) | `src/intern.rs` | O(1) symbol comparison |
 | Shannon bit costs | `src/engine.rs` | `-log2(freq/total)`, no distortion |
 | T=G+E scoring | `src/lib.rs` | G charged once at insertion |
-| Staged beam search (SPMA core) | `src/beam.rs` | Monotonicity constraint enforced |
+| Staged beam search (SPMA core) | `src/beam.rs` | Monotonicity + span contiguity + inter-pattern ordering |
 | Learning loop with MDL gate | `src/engine.rs` | n-gram bootstrap + beam-driven extraction |
+| Grammar-stability convergence | `src/engine.rs` | Terminates on `old_grew \|\| added_this_cycle` |
 | One-trial learning | `src/engine.rs` | Add-only store, no forgetting |
+| Corpus costs fallback | `src/engine.rs` + `src/lib.rs` | Known-but-rare symbols get non-zero E |
 | Alignment table printer | `src/engine.rs` | Per-symbol coverage display |
 | Unknown symbol detection | `src/lib.rs` | Symbols absent from training → forced E > 0 |
-| Grammar persistence | `src/lib.rs` | serde + bincode |
+| Grammar persistence | `src/lib.rs` | serde + bincode; includes corpus_costs |
 
 ## Architecture
 
@@ -155,7 +163,7 @@ Key decisions — see [docs/architecture.md](docs/architecture.md):
 - No numeric representation (Wolff acknowledged this gap; no solution exists)
 - No 2D patterns, probabilistic inference, or cognitive modeling
 - Not validated on real data yet
-- Order violations undetected — grammar converges to single-symbol patterns; beam search is order-agnostic (see [docs/known-issues.md](docs/known-issues.md))
+- Order violations: partially detectable (span contiguity + inter-pattern ordering enforced at beam level); full-sequence reorderings via multi-pattern stitching remain undetected — see [docs/known-issues.md](docs/known-issues.md) Issue #5 for two documented fix strategies
 - Performance cap ~1k patterns before Phases B–F (inverted index, parallel beam) are implemented
 
 ## References

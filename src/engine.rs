@@ -139,6 +139,11 @@ pub struct SpmaEngine {
     pub symbol_frequencies: HashMap<u32, u32>,
     pub original_alphabet: HashSet<u32>,
 
+    /// Symbol costs derived from the training corpus (new_patterns frequencies).
+    /// Indexed by symbol ID. Used at inference as fallback for symbols not in any
+    /// grammar pattern (which would otherwise have cost=0, masking uncovered symbols).
+    pub corpus_costs: Vec<f64>,
+
     pub next_pattern_id: u32,
 
     pub verbose: bool,
@@ -166,9 +171,10 @@ impl SpmaEngine {
             new_patterns: Vec::new(),
             symbol_frequencies: HashMap::new(),
             original_alphabet: HashSet::new(),
+            corpus_costs: Vec::new(),
             next_pattern_id: 1,
             verbose: false,
-            max_cycles: 10,
+            max_cycles: 1000,
             keep_rows: 5,
         }
     }
@@ -315,40 +321,12 @@ impl SpmaEngine {
         apply_symbol_costs(&self.symbol_frequencies, &mut self.new_patterns);
         self.assign_symbol_types();
 
-        // Seed old store with single-symbol patterns from the alphabet
-        // This enables compression via reuse of frequent symbols
-        let mut seen_symbols = HashSet::new();
-        for pat in &self.new_patterns {
-            for sym in &pat.symbols {
-                if seen_symbols.insert(sym.name) {
-                    let seed_pat = Pattern::new(vec![sym.clone()], self.next_pattern_id);
-                    self.next_pattern_id += 1;
-                    self.old_patterns.push(seed_pat);
-                }
-            }
-        }
-        // Apply costs to seed patterns
-        apply_symbol_costs(&self.symbol_frequencies, &mut self.old_patterns);
-
         let mut total_cycles = 0u32;
-        let convergence_epsilon = 1e-6;
-        let mut t_per_cycle: Vec<f64> = Vec::new();
-
-        // Extract frequent contiguous bigrams from input patterns.
-        self.extract_frequent_ngrams(&self.new_patterns.clone(), 2);
 
         loop {
             total_cycles += 1;
 
             let old_count_before = self.old_patterns.len();
-            let t_before = compute_total_t_for_patterns(
-                &self.new_patterns,
-                &self.old_patterns,
-                &self.interner,
-                self.keep_rows as usize,
-            );
-
-            let mut any_improvement = false;
 
             // Pass 1: collect candidate patterns from beam alignments (count occurrences)
             let new_patterns_snapshot = self.new_patterns.clone();
@@ -358,8 +336,6 @@ impl SpmaEngine {
 
                 if let Some(best) = best_opt {
                     if best.cd > 0.0 {
-                        any_improvement = true;
-
                         // Increment frequency of used Old patterns
                         for &oi in &best.old_pattern_indices {
                             if oi < self.old_patterns.len() {
@@ -473,24 +449,19 @@ impl SpmaEngine {
             apply_symbol_costs(&self.symbol_frequencies, &mut self.old_patterns);
             apply_symbol_costs(&self.symbol_frequencies, &mut self.new_patterns);
 
-            let t_after = compute_total_t_for_patterns(
-                &self.new_patterns,
-                &self.old_patterns,
-                &self.interner,
-                self.keep_rows as usize,
-            );
-            t_per_cycle.push(t_after);
-
             let old_grew = self.old_patterns.len() > old_count_before;
 
-            // Continue if old store grew (first pass populates it) or T improved
-            if !any_improvement && !old_grew && !added_this_cycle {
-                break;
-            }
-            if any_improvement && (t_before - t_after).abs() < convergence_epsilon {
+            // Converged when grammar didn't change this cycle: same grammar → same beam →
+            // same MDL decisions → no change possible next cycle.
+            if !old_grew && !added_this_cycle {
                 break;
             }
             if total_cycles >= self.max_cycles {
+                eprintln!(
+                    "spma: learning truncated at max_cycles={} without convergence — \
+                     increase SpmaEngine::max_cycles if the grammar is still growing",
+                    self.max_cycles
+                );
                 break;
             }
         }
@@ -518,6 +489,18 @@ impl SpmaEngine {
             }
         }
 
+        // Snapshot corpus-level costs from new_patterns. Used at inference as fallback
+        // for symbols not absorbed into any grammar pattern (which would otherwise cost 0).
+        let max_id = self.interner.len();
+        self.corpus_costs = vec![0.0f64; max_id];
+        for p in &self.new_patterns {
+            for s in &p.symbols {
+                if (s.name as usize) < max_id && s.bit_cost > 0.0 {
+                    self.corpus_costs[s.name as usize] = s.bit_cost;
+                }
+            }
+        }
+
         let string_frequencies: HashMap<String, u32> = self
             .symbol_frequencies
             .iter()
@@ -530,7 +513,7 @@ impl SpmaEngine {
             symbol_frequencies: string_frequencies,
             original_alphabet_size: self.original_alphabet.len(),
             final_alphabet_size: self.symbol_frequencies.len(),
-            t_per_cycle,
+            t_per_cycle: vec![],
         })
     }
 
@@ -783,38 +766,6 @@ fn compute_total_e_dp(sentences: &[Vec<u32>], grammar: &[Vec<u32>], costs: &[f64
     total_e
 }
 
-fn compute_total_t_for_patterns(
-    new_patterns: &[Pattern],
-    old_patterns: &[Pattern],
-    interner: &Interner,
-    beam_k: usize,
-) -> f64 {
-    let max_id = interner.len();
-    let mut costs = vec![0.0f64; max_id];
-    for p in old_patterns.iter().chain(new_patterns.iter()) {
-        for s in &p.symbols {
-            if (s.name as usize) < max_id {
-                costs[s.name as usize] = s.bit_cost;
-            }
-        }
-    }
-    let old_id_vecs: Vec<Vec<u32>> = old_patterns
-        .iter()
-        .map(|p| p.symbols.iter().map(|s| s.name).collect())
-        .collect();
-
-    new_patterns
-        .iter()
-        .map(|new_pat| {
-            let new_ids: Vec<u32> = new_pat.symbols.iter().map(|s| s.name).collect();
-            let alignments = beam_search(&new_ids, &old_id_vecs, beam_k, &costs);
-            alignments
-                .first()
-                .map(|a| a.t)
-                .unwrap_or_else(|| new_ids.iter().map(|&id| costs[id as usize]).sum())
-        })
-        .sum()
-}
 
 #[cfg(test)]
 mod tests {
