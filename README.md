@@ -155,7 +155,7 @@ Key decisions — see [docs/architecture.md](docs/architecture.md):
 - No numeric representation (Wolff acknowledged this gap; no solution exists)
 - No 2D patterns, probabilistic inference, or cognitive modeling
 - Not validated on real data yet
-- Order violations undetected without boundary markers or multi-symbol patterns
+- Order violations undetected — grammar converges to single-symbol patterns; beam search is order-agnostic (see [docs/known-issues.md](docs/known-issues.md))
 - Performance cap ~1k patterns before Phases B–F (inverted index, parallel beam) are implemented
 
 ## References
