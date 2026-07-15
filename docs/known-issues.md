@@ -4,7 +4,18 @@ Three confirmed deviations from Wolff's SP theory, discovered via theory-vs-impl
 (2026-07-16). Issues are ordered by fix dependency: #1 must be fixed before #2 can be validated,
 and both before #3 is meaningful.
 
-## 1. Single-symbol patterns in grammar — theory violation that blocks multi-symbol learning
+## 1. ~~Single-symbol patterns in grammar — theory violation that blocks multi-symbol learning~~ **RESOLVED**
+
+**Resolution (2026-07-16):** Removed singleton seeding block (`engine.rs:318–329`). Grammar now
+starts empty; n-gram cold-start miner bootstraps it from repeated contiguous bigrams. Convergence
+check switched from `compute_total_t_for_patterns` (beam-based, inconsistent) to
+`compute_total_e_dp`-based T (consistent with MDL gate). Dead function `compute_total_t_for_patterns`
+deleted. 57 tests pass; 2 new tests verify multi-symbol grammar formation and order-sensitivity.
+Example `fault_detection` now produces real multi-symbol grammar patterns.
+
+---
+
+## ~~1.~~ (archived) Single-symbol patterns in grammar — theory violation that blocks multi-symbol learning
 
 **Status:** Open — architectural. Root cause of issues #2 and #3 being unobservable.
 

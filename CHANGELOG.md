@@ -18,6 +18,12 @@
 - `Spma::infer` now correctly fires `is_anomaly` for symbols never seen during training;
   unknown symbols are forced uncovered and accumulate an `unknown_penalty` (average known
   bit cost) rather than silently receiving cost 0.0
+- Removed singleton seeding from `learn()` — individual symbols are alphabet atoms per SP
+  theory, not grammar entries; seeding them into `old_patterns` made the MDL gate reject
+  all multi-symbol candidates (E=0 trivially with singletons, adding any pattern raised T)
+- Convergence check now uses `compute_total_e_dp`-based T (consistent with MDL gate) instead
+  of `beam_search`-based T; the two disagreed, causing spurious convergence and T non-monotone
+  warnings after singleton removal
 
 ### Performance
 - MDL Pass 2 in `learn()` hoists `current_multi`/`current_g`/`current_e`/`current_t`

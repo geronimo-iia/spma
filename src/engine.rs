@@ -315,38 +315,36 @@ impl SpmaEngine {
         apply_symbol_costs(&self.symbol_frequencies, &mut self.new_patterns);
         self.assign_symbol_types();
 
-        // Seed old store with single-symbol patterns from the alphabet
-        // This enables compression via reuse of frequent symbols
-        let mut seen_symbols = HashSet::new();
-        for pat in &self.new_patterns {
-            for sym in &pat.symbols {
-                if seen_symbols.insert(sym.name) {
-                    let seed_pat = Pattern::new(vec![sym.clone()], self.next_pattern_id);
-                    self.next_pattern_id += 1;
-                    self.old_patterns.push(seed_pat);
-                }
-            }
-        }
-        // Apply costs to seed patterns
-        apply_symbol_costs(&self.symbol_frequencies, &mut self.old_patterns);
-
         let mut total_cycles = 0u32;
         let convergence_epsilon = 1e-6;
         let mut t_per_cycle: Vec<f64> = Vec::new();
-
-        // Extract frequent contiguous bigrams from input patterns.
-        self.extract_frequent_ngrams(&self.new_patterns.clone(), 2);
 
         loop {
             total_cycles += 1;
 
             let old_count_before = self.old_patterns.len();
-            let t_before = compute_total_t_for_patterns(
-                &self.new_patterns,
-                &self.old_patterns,
-                &self.interner,
-                self.keep_rows as usize,
-            );
+
+            // T measured consistently with the MDL gate (compute_total_e_dp, not beam_search).
+            let t_before = {
+                let max_id = self.interner.len();
+                let mut costs = vec![0.0f64; max_id];
+                for p in self.old_patterns.iter().chain(self.new_patterns.iter()) {
+                    for s in &p.symbols {
+                        if (s.name as usize) < max_id {
+                            costs[s.name as usize] = s.bit_cost;
+                        }
+                    }
+                }
+                let multi: Vec<Vec<u32>> = self.old_patterns.iter()
+                    .filter(|p| p.symbols.len() >= 2)
+                    .map(|p| p.symbols.iter().map(|s| s.name).collect())
+                    .collect();
+                let g: f64 = multi.iter().flat_map(|p| p.iter()).map(|&id| costs[id as usize]).sum();
+                let new_id_vecs: Vec<Vec<u32>> = self.new_patterns.iter()
+                    .map(|p| p.symbols.iter().map(|s| s.name).collect())
+                    .collect();
+                g + compute_total_e_dp(&new_id_vecs, &multi, &costs)
+            };
 
             let mut any_improvement = false;
 
@@ -473,12 +471,26 @@ impl SpmaEngine {
             apply_symbol_costs(&self.symbol_frequencies, &mut self.old_patterns);
             apply_symbol_costs(&self.symbol_frequencies, &mut self.new_patterns);
 
-            let t_after = compute_total_t_for_patterns(
-                &self.new_patterns,
-                &self.old_patterns,
-                &self.interner,
-                self.keep_rows as usize,
-            );
+            let t_after = {
+                let max_id = self.interner.len();
+                let mut costs = vec![0.0f64; max_id];
+                for p in self.old_patterns.iter().chain(self.new_patterns.iter()) {
+                    for s in &p.symbols {
+                        if (s.name as usize) < max_id {
+                            costs[s.name as usize] = s.bit_cost;
+                        }
+                    }
+                }
+                let multi: Vec<Vec<u32>> = self.old_patterns.iter()
+                    .filter(|p| p.symbols.len() >= 2)
+                    .map(|p| p.symbols.iter().map(|s| s.name).collect())
+                    .collect();
+                let g: f64 = multi.iter().flat_map(|p| p.iter()).map(|&id| costs[id as usize]).sum();
+                let new_id_vecs: Vec<Vec<u32>> = self.new_patterns.iter()
+                    .map(|p| p.symbols.iter().map(|s| s.name).collect())
+                    .collect();
+                g + compute_total_e_dp(&new_id_vecs, &multi, &costs)
+            };
             t_per_cycle.push(t_after);
 
             let old_grew = self.old_patterns.len() > old_count_before;
@@ -783,38 +795,6 @@ fn compute_total_e_dp(sentences: &[Vec<u32>], grammar: &[Vec<u32>], costs: &[f64
     total_e
 }
 
-fn compute_total_t_for_patterns(
-    new_patterns: &[Pattern],
-    old_patterns: &[Pattern],
-    interner: &Interner,
-    beam_k: usize,
-) -> f64 {
-    let max_id = interner.len();
-    let mut costs = vec![0.0f64; max_id];
-    for p in old_patterns.iter().chain(new_patterns.iter()) {
-        for s in &p.symbols {
-            if (s.name as usize) < max_id {
-                costs[s.name as usize] = s.bit_cost;
-            }
-        }
-    }
-    let old_id_vecs: Vec<Vec<u32>> = old_patterns
-        .iter()
-        .map(|p| p.symbols.iter().map(|s| s.name).collect())
-        .collect();
-
-    new_patterns
-        .iter()
-        .map(|new_pat| {
-            let new_ids: Vec<u32> = new_pat.symbols.iter().map(|s| s.name).collect();
-            let alignments = beam_search(&new_ids, &old_id_vecs, beam_k, &costs);
-            alignments
-                .first()
-                .map(|a| a.t)
-                .unwrap_or_else(|| new_ids.iter().map(|&id| costs[id as usize]).sum())
-        })
-        .sum()
-}
 
 #[cfg(test)]
 mod tests {
