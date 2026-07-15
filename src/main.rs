@@ -48,14 +48,6 @@ fn main() -> Result<()> {
                         .help("Path to saved grammar"),
                 )
                 .arg(
-                    Arg::new("no-learn")
-                        .long("no-learn")
-                        .action(ArgAction::SetTrue)
-                        .help(
-                            "Disable incremental learning during inference (grammar stays frozen)",
-                        ),
-                )
-                .arg(
                     Arg::new("verbose")
                         .long("verbose")
                         .short('v')
@@ -109,7 +101,6 @@ fn main() -> Result<()> {
             let input_file = sub.get_one::<String>("input").unwrap();
             let grammar_path = sub.get_one::<String>("grammar").unwrap();
             let verbose = sub.get_flag("verbose");
-            let _no_learn = sub.get_flag("no-learn");
 
             let content = fs::read_to_string(input_file)?;
             let sequences: Vec<Vec<&str>> = content

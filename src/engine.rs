@@ -4,6 +4,7 @@
 use crate::*;
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as FmtWrite;
 use std::fs;
 
 fn collect_frequencies(freqs: &mut HashMap<u32, u32>, patterns: &[Pattern]) {
@@ -30,17 +31,8 @@ fn apply_symbol_costs(freqs: &HashMap<u32, u32>, patterns: &mut [Pattern]) {
     }
 }
 
-/// Print a human-readable alignment table for one New pattern and its best BeamAlignment.
-///
-/// Format:
-/// ```text
-/// New:   the  cat  sat  on   the  mat
-/// Old1:  the            -    the
-/// Old2:       cat
-/// ...
-/// Matched: N/M  G=X bits  E=Y bits  T=Z bits  CD=+W bits
-/// ```
-pub fn print_alignment_table(
+pub fn write_alignment_table(
+    w: &mut impl FmtWrite,
     new_pattern: &Pattern,
     alignment: &BeamAlignment,
     old_patterns: &[Pattern],
@@ -52,7 +44,6 @@ pub fn print_alignment_table(
         return;
     }
 
-    // Collect old patterns used in this alignment, precompute their symbol names once
     let used_olds: Vec<(&Pattern, Vec<String>)> = alignment
         .old_pattern_indices
         .iter()
@@ -60,7 +51,6 @@ pub fn print_alignment_table(
         .map(|p| (p, p.get_symbol_names(interner)))
         .collect();
 
-    // For each covered new position, assign it to the first old pattern that contains it.
     let mut assignment: Vec<Option<usize>> = vec![None; n];
     for (row_idx, (_, old_names)) in used_olds.iter().enumerate() {
         for (p, covered) in alignment.covered_new.iter().enumerate() {
@@ -70,18 +60,13 @@ pub fn print_alignment_table(
         }
     }
 
-    // Compute column widths
     let col_widths: Vec<usize> = (0..n)
         .map(|p| {
             let base = new_syms[p].len();
             let old_max = used_olds
                 .iter()
                 .map(|(_, names)| {
-                    if names.contains(&new_syms[p]) {
-                        new_syms[p].len()
-                    } else {
-                        1
-                    }
+                    if names.contains(&new_syms[p]) { new_syms[p].len() } else { 1 }
                 })
                 .max()
                 .unwrap_or(1);
@@ -96,17 +81,15 @@ pub fn print_alignment_table(
         .unwrap_or(4)
         .max("New:".len());
 
-    // Print New row
-    print!("{:<width$}", "New:", width = label_width + 1);
+    let _ = write!(w, "{:<width$}", "New:", width = label_width + 1);
     for (p, sym) in new_syms.iter().enumerate() {
-        print!("{:<width$}", sym, width = col_widths[p]);
+        let _ = write!(w, "{:<width$}", sym, width = col_widths[p]);
     }
-    println!();
+    let _ = writeln!(w);
 
-    // Print Old rows
     for (row_idx, (_, old_names)) in used_olds.iter().enumerate() {
         let label = format!("Old{}:", row_idx + 1);
-        print!("{:<width$}", label, width = label_width + 1);
+        let _ = write!(w, "{:<width$}", label, width = label_width + 1);
         for (p, _) in new_syms.iter().enumerate() {
             let cell = if alignment.covered_new[p] && assignment[p] == Some(row_idx) {
                 old_names
@@ -119,23 +102,29 @@ pub fn print_alignment_table(
             } else {
                 " ".to_string()
             };
-            print!("{:<width$}", cell, width = col_widths[p]);
+            let _ = write!(w, "{:<width$}", cell, width = col_widths[p]);
         }
-        println!(" [{}]", old_names.join(" "));
+        let _ = writeln!(w, " [{}]", old_names.join(" "));
     }
 
-    // Summary line
     let matched = alignment.covered_new.iter().filter(|&&c| c).count();
-    println!(
+    let _ = writeln!(
+        w,
         "\nMatched: {}/{}  G={:.1} bits  E={:.1} bits  T={:.1} bits  CD={:+.1} bits",
-        matched,
-        n,
-        alignment.g + 0.0,
-        alignment.e + 0.0,
-        alignment.t + 0.0,
-        alignment.cd
+        matched, n, alignment.g, alignment.e, alignment.t, alignment.cd
     );
-    println!();
+    let _ = writeln!(w);
+}
+
+pub fn print_alignment_table(
+    new_pattern: &Pattern,
+    alignment: &BeamAlignment,
+    old_patterns: &[Pattern],
+    interner: &Interner,
+) {
+    let mut out = String::new();
+    write_alignment_table(&mut out, new_pattern, alignment, old_patterns, interner);
+    print!("{out}");
 }
 
 /// Main SPMA learning system that discovers patterns and builds grammars

@@ -37,7 +37,7 @@ pub(crate) mod beam;
 pub use beam::{beam_search, BeamAlignment};
 
 pub(crate) mod engine;
-pub use engine::{extract_learned_pattern, LearningResults, SpmaEngine};
+pub use engine::{extract_learned_pattern, write_alignment_table, LearningResults, SpmaEngine};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -146,6 +146,11 @@ impl Spma {
             engine.inner.interner.intern(name);
         }
         engine.inner.old_patterns = snapshot.old_patterns;
+        for p in &engine.inner.old_patterns {
+            for s in &p.symbols {
+                engine.inner.original_alphabet.insert(s.name);
+            }
+        }
         Ok(engine)
     }
 
@@ -210,15 +215,9 @@ impl Spma {
                 .collect();
             let new_pat = Pattern::new(new_syms, 0);
 
-            let mut buf = Vec::new();
-            print_alignment_table_to_buf(
-                &new_pat,
-                best,
-                &self.inner.old_patterns,
-                &tmp_interner,
-                &mut buf,
-            );
-            String::from_utf8_lossy(&buf).into_owned()
+            let mut out = String::new();
+            write_alignment_table(&mut out, &new_pat, best, &self.inner.old_patterns, &tmp_interner);
+            out
         } else {
             format!("New:  {}\n(no alignment)\n", sequence.join("  "))
         };
@@ -233,95 +232,3 @@ impl Spma {
     }
 }
 
-fn print_alignment_table_to_buf(
-    new_pattern: &Pattern,
-    alignment: &BeamAlignment,
-    old_patterns: &[Pattern],
-    interner: &Interner,
-    buf: &mut Vec<u8>,
-) {
-    use std::fmt::Write as FmtWrite;
-    let mut out = String::new();
-
-    let new_syms: Vec<String> = new_pattern.get_symbol_names(interner);
-    let n = new_syms.len();
-    if n == 0 {
-        return;
-    }
-
-    let used_olds: Vec<(&Pattern, Vec<String>)> = alignment
-        .old_pattern_indices
-        .iter()
-        .filter_map(|&i| old_patterns.get(i))
-        .map(|p| (p, p.get_symbol_names(interner)))
-        .collect();
-
-    let mut assignment: Vec<Option<usize>> = vec![None; n];
-    for (row_idx, (_, old_names)) in used_olds.iter().enumerate() {
-        for (p, covered) in alignment.covered_new.iter().enumerate() {
-            if *covered && assignment[p].is_none() && old_names.contains(&new_syms[p]) {
-                assignment[p] = Some(row_idx);
-            }
-        }
-    }
-
-    let col_widths: Vec<usize> = (0..n)
-        .map(|p| {
-            let base = new_syms[p].len();
-            let old_max = used_olds
-                .iter()
-                .map(|(_, names)| {
-                    if names.contains(&new_syms[p]) {
-                        new_syms[p].len()
-                    } else {
-                        1
-                    }
-                })
-                .max()
-                .unwrap_or(1);
-            base.max(old_max) + 2
-        })
-        .collect();
-
-    let label_width = used_olds
-        .len()
-        .checked_sub(1)
-        .map(|last| format!("Old{}:", last + 1).len())
-        .unwrap_or(4)
-        .max("New:".len());
-
-    let _ = write!(out, "{:<width$}", "New:", width = label_width + 1);
-    for (p, sym) in new_syms.iter().enumerate() {
-        let _ = write!(out, "{:<width$}", sym, width = col_widths[p]);
-    }
-    out.push('\n');
-
-    for (row_idx, (_, old_names)) in used_olds.iter().enumerate() {
-        let label = format!("Old{}:", row_idx + 1);
-        let _ = write!(out, "{:<width$}", label, width = label_width + 1);
-        for (p, _) in new_syms.iter().enumerate() {
-            let cell = if alignment.covered_new[p] && assignment[p] == Some(row_idx) {
-                old_names
-                    .iter()
-                    .find(|&s| s == &new_syms[p])
-                    .cloned()
-                    .unwrap_or_else(|| " ".to_string())
-            } else if alignment.covered_new[p] && assignment[p].is_none() {
-                "-".to_string()
-            } else {
-                " ".to_string()
-            };
-            let _ = write!(out, "{:<width$}", cell, width = col_widths[p]);
-        }
-        let _ = writeln!(out, " [{}]", old_names.join(" "));
-    }
-
-    let matched = alignment.covered_new.iter().filter(|&&c| c).count();
-    let _ = writeln!(
-        out,
-        "\nMatched: {}/{}  G={:.1} bits  E={:.1} bits  T={:.1} bits  CD={:+.1} bits",
-        matched, n, alignment.g, alignment.e, alignment.t, alignment.cd
-    );
-
-    buf.extend_from_slice(out.as_bytes());
-}
