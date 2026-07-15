@@ -408,28 +408,25 @@ impl SpmaEngine {
                         .unwrap_or(std::cmp::Ordering::Equal)
                 });
 
+                let mut current_multi: Vec<Vec<u32>> = self
+                    .old_patterns
+                    .iter()
+                    .filter(|p| p.symbols.len() >= 2)
+                    .map(|p| p.symbols.iter().map(|s| s.name).collect())
+                    .collect();
+                let mut current_g: f64 = current_multi
+                    .iter()
+                    .flat_map(|p| p.iter())
+                    .map(|&id| costs[id as usize])
+                    .sum();
+                let mut current_e = compute_total_e_dp(&new_id_vecs, &current_multi, &costs);
+                let mut current_t = current_g + current_e;
+
                 for (ngram, _count) in &sorted_candidates {
-                    let is_dup = self.old_patterns.iter().any(|p| {
-                        let p_ids: Vec<u32> = p.symbols.iter().map(|s| s.name).collect();
-                        p_ids == *ngram
-                    });
+                    let is_dup = current_multi.iter().any(|p| p == ngram);
                     if is_dup {
                         continue;
                     }
-
-                    let current_multi: Vec<Vec<u32>> = self
-                        .old_patterns
-                        .iter()
-                        .filter(|p| p.symbols.len() >= 2)
-                        .map(|p| p.symbols.iter().map(|s| s.name).collect())
-                        .collect();
-                    let current_g: f64 = current_multi
-                        .iter()
-                        .flat_map(|p| p.iter())
-                        .map(|&id| costs[id as usize])
-                        .sum();
-                    let current_e = compute_total_e_dp(&new_id_vecs, &current_multi, &costs);
-                    let current_t = current_g + current_e;
 
                     let pattern_cost: f64 = ngram.iter().map(|&id| costs[id as usize]).sum();
                     let mut new_multi = current_multi.clone();
@@ -452,6 +449,10 @@ impl SpmaEngine {
                         pat.frequency = 1;
                         self.next_pattern_id += 1;
                         self.old_patterns.push(pat);
+                        current_multi.push(ngram.clone());
+                        current_g = new_g;
+                        current_e = new_e;
+                        current_t = new_t;
                     }
                 }
             }

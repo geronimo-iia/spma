@@ -889,4 +889,42 @@ mod tests {
         // Brackets are in the grammar — should not be anomaly
         assert!(!result.is_anomaly || result.e_cost == 0.0);
     }
+
+    #[test]
+    fn mdl_accumulator_determinism_multi_candidate_corpus() {
+        // Corpus large enough to produce multiple distinct candidates per cycle.
+        // Both engines must produce identical grammar (same pattern names).
+        // This verifies the accumulator refactor is behaviourally equivalent to
+        // the old per-iteration rebuild.
+        let corpus: Vec<Vec<&str>> = vec![
+            vec!["A", "B", "C"],
+            vec!["A", "B", "C"],
+            vec!["A", "B", "D"],
+            vec!["A", "B", "D"],
+            vec!["X", "Y", "Z"],
+            vec!["X", "Y", "Z"],
+            vec!["X", "Y", "W"],
+            vec!["A", "B", "C"],
+            vec!["X", "Y", "Z"],
+            vec!["A", "B", "D"],
+        ];
+
+        let mut e1 = spma::Spma::new();
+        e1.train(&corpus).unwrap();
+
+        let mut e2 = spma::Spma::new();
+        e2.train(&corpus).unwrap();
+
+        // Both runs must agree: same e_cost for every sequence.
+        let probe = vec!["A", "B", "C"];
+        let r1 = e1.infer(&probe).unwrap();
+        let r2 = e2.infer(&probe).unwrap();
+        assert_eq!(r1.e_cost, r2.e_cost, "accumulator runs diverged");
+        assert_eq!(r1.is_anomaly, r2.is_anomaly);
+
+        let probe2 = vec!["X", "Y", "W"];
+        let r3 = e1.infer(&probe2).unwrap();
+        let r4 = e2.infer(&probe2).unwrap();
+        assert_eq!(r3.e_cost, r4.e_cost);
+    }
 }

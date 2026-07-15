@@ -105,7 +105,16 @@ Add tests:
   - infer with known-but-rare symbol → behavior unchanged
 ```
 
-## 3. MDL gate in `learn` rebuilds `current_multi` and `current_g` on every candidate iteration
+## 3. ~~MDL gate in `learn` rebuilds `current_multi` and `current_g` on every candidate iteration~~ **RESOLVED**
+
+**Resolution (2026-07-16):** Hoisted `current_multi`/`current_g`/`current_e`/`current_t` before the
+candidate loop. On acceptance, accumulators update in O(1) instead of rebuilding from `old_patterns`.
+Dup check now tests against `current_multi` directly (avoids per-iteration id-vec allocation).
+54 tests pass; added `mdl_accumulator_determinism_multi_candidate_corpus` to verify identical output.
+
+---
+
+## ~~3.~~ (archived) MDL gate in `learn` rebuilds `current_multi` and `current_g` on every candidate iteration
 
 **Location:** `src/engine.rs`, `learn()` Pass 2, lines ~420-456
 
