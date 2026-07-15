@@ -156,6 +156,27 @@ impl Spma {
         let mut tmp_interner = self.inner.interner.clone();
         let ids: Vec<u32> = sequence.iter().map(|&s| tmp_interner.intern(s)).collect();
 
+        // Identify positions with symbols not seen during training.
+        let unknown: Vec<bool> = ids
+            .iter()
+            .map(|id| !self.inner.original_alphabet.contains(id))
+            .collect();
+
+        // Average bit cost of known symbols — used as penalty for unknown ones.
+        let known_costs: Vec<f64> = self
+            .inner
+            .old_patterns
+            .iter()
+            .flat_map(|p| p.symbols.iter())
+            .map(|s| s.bit_cost)
+            .filter(|&c| c > 0.0)
+            .collect();
+        let unknown_penalty = if known_costs.is_empty() {
+            1.0
+        } else {
+            known_costs.iter().sum::<f64>() / known_costs.len() as f64
+        };
+
         let max_id = tmp_interner.len();
         let mut costs = vec![0.0f64; max_id];
         for p in &self.inner.old_patterns {
@@ -177,7 +198,7 @@ impl Spma {
             .into_iter()
             .next();
 
-        let (e_cost, cd, covered) = if let Some(ref b) = best_opt {
+        let (beam_e, beam_cd, mut covered) = if let Some(ref b) = best_opt {
             (b.e, b.cd, b.covered_new.clone())
         } else {
             let raw: f64 = ids
@@ -192,6 +213,18 @@ impl Spma {
                 .sum();
             (raw, 0.0, vec![false; ids.len()])
         };
+
+        // Unknown positions are always uncovered regardless of beam result.
+        let mut unknown_e = 0.0f64;
+        for (i, &is_unknown) in unknown.iter().enumerate() {
+            if is_unknown {
+                covered[i] = false;
+                unknown_e += unknown_penalty;
+            }
+        }
+        let e_cost = beam_e + unknown_e;
+        // CD is reduced by the penalty we're adding for unknown symbols.
+        let cd = beam_cd - unknown_e;
 
         let unmatched: Vec<String> = ids
             .iter()

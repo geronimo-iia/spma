@@ -827,14 +827,13 @@ mod tests {
     }
 
     #[test]
-    fn spma_infer_unseen_symbol_appears_in_unmatched() {
+    fn spma_infer_unseen_symbol_is_anomaly() {
         let mut engine = spma::Spma::new();
         engine.train(&[vec!["A", "B", "C"]]).unwrap();
         let result = engine.infer(&["A", "B", "X"]).unwrap();
-        // Unseen symbols get cost 0.0 (no frequency data) so E=0 even when unmatched.
-        // is_anomaly = e_cost > 0, so X alone does not trigger it — but it IS unmatched.
-        assert!(result.unmatched.contains(&"X".to_string()),
-            "X should appear in unmatched list");
+        assert!(result.is_anomaly, "unseen X should trigger anomaly");
+        assert!(result.e_cost > 0.0, "e_cost should be > 0 due to unknown penalty");
+        assert!(result.unmatched.contains(&"X".to_string()), "X should be in unmatched");
     }
 
     #[test]
@@ -851,11 +850,31 @@ mod tests {
         let mut engine = spma::Spma::new();
         engine.train(&[vec!["A", "B"]]).unwrap();
         let result = engine.infer(&["X", "Y", "Z"]).unwrap();
-        // Fully unseen symbols have cost 0.0 — beam finds no match, no alignment produced.
+        assert!(result.is_anomaly, "all-unknown sequence should be anomaly");
         assert_eq!(result.unmatched.len(), 3, "all 3 symbols should be unmatched");
-        // infer() always produces a New row; verify it contains the symbols
         assert!(result.alignment.contains("New:"), "got: {}", result.alignment);
         assert!(result.alignment.contains('X'), "got: {}", result.alignment);
+    }
+
+    #[test]
+    fn spma_infer_known_but_rare_symbol_not_penalised_as_unknown() {
+        // Symbol "C" appears once in training — low frequency, high bit cost, but KNOWN.
+        // Should not get the unknown_penalty on top of its real cost.
+        let mut engine = spma::Spma::new();
+        engine.train(&[
+            vec!["A", "B", "C"],
+            vec!["A", "B", "C"],
+            vec!["A", "B", "D"],
+        ]).unwrap();
+        let known_result = engine.infer(&["A", "B", "C"]).unwrap();
+        let unknown_result = engine.infer(&["A", "B", "X"]).unwrap();
+        // Both may be anomalies depending on grammar, but unknown should have >= e_cost
+        // because the penalty is additive. Known-rare must NOT get double-penalised.
+        assert!(
+            unknown_result.e_cost >= known_result.e_cost,
+            "unknown symbol should cost at least as much as a known-rare symbol: \
+             unknown_e={} known_e={}", unknown_result.e_cost, known_result.e_cost
+        );
     }
 
     #[test]
