@@ -156,6 +156,8 @@ Key decisions — see [docs/architecture.md](docs/architecture.md):
 | File | Content |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Scoring rationale, beam search, learning loop |
+| [docs/known-issues.md](docs/known-issues.md) | Open issues, confirmed theory deviations, fix strategies |
+| [docs/hierarchical-grammar-design.md](docs/hierarchical-grammar-design.md) | Fix B implementation design: level-2 grammar, `SymbolRef`, l2 inference |
 | [docs/performance.md](docs/performance.md) | Possible improvements (only Phase A implemented) |
 
 ## Limitations

@@ -101,6 +101,14 @@ spma infer --grammar /path/custom.bin anomaly.txt
 
 Grammar persistence: serde + bincode serialisation of the Old pattern store. `GrammarSnapshot` includes `old_patterns`, `interner_names`, and `corpus_costs`. On load, `original_alphabet` is populated from all interned names.
 
+## Planned: hierarchical grammar (level-2 patterns)
+
+The current engine is level-1 only. For full SP-theory compliance and inter-pattern
+ordering detection, a level-2 grammar layer is designed but not yet implemented.
+See [docs/hierarchical-grammar-design.md](hierarchical-grammar-design.md) for the
+concrete implementation plan: `SymbolRef` enum, level-2 learning pass, level-2
+beam inference, `e_cost_l2` in `InferResult`, and persistence changes.
+
 ## Test organisation
 
 Integration tests split into four modules under `tests/`:

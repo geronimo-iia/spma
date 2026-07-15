@@ -135,6 +135,8 @@ Fix A for an immediate pragmatic gain with minimal code change. Fix B for a corr
 implementation that aligns with SP theory and handles arbitrary depth. They are not
 mutually exclusive — Fix A can be removed once Fix B is implemented, since Fix B subsumes it.
 
+Fix B concrete implementation design: [docs/hierarchical-grammar-design.md](hierarchical-grammar-design.md).
+
 
 ### Tests to add (Fix A)
 
