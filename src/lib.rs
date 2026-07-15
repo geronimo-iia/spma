@@ -37,7 +37,7 @@ pub(crate) mod beam;
 pub use beam::{beam_search, BeamAlignment};
 
 pub(crate) mod engine;
-pub use engine::{extract_learned_pattern, write_alignment_table, LearningResults, SpmaEngine};
+pub use engine::{extract_learned_patterns, write_alignment_table, LearningResults, SpmaEngine};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 

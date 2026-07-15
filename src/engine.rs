@@ -367,17 +367,14 @@ impl SpmaEngine {
                             }
                         }
 
-                        // Collect candidate extracted pattern (contiguous covered spans only)
-                        if let Some(learned) = extract_learned_pattern(
+                        for learned in extract_learned_patterns(
                             new_pattern,
                             &best.covered_new,
-                            self.next_pattern_id,
+                            &mut self.next_pattern_id,
                         ) {
                             let learned_ids: Vec<u32> =
                                 learned.symbols.iter().map(|s| s.name).collect();
-                            if learned_ids.len() >= 2 {
-                                *candidates.entry(learned_ids).or_insert(0) += 1;
-                            }
+                            *candidates.entry(learned_ids).or_insert(0) += 1;
                         }
                     }
                 }
@@ -730,25 +727,33 @@ impl SpmaEngine {
     }
 }
 
-/// Extract a learned pattern from the covered subsequence of a New pattern.
-/// Returns None if fewer than 2 symbols are covered.
-pub fn extract_learned_pattern(
+/// Extract all maximal contiguous covered spans from a New pattern as candidate grammar patterns.
+/// Spans shorter than 2 symbols are discarded. Each span gets a unique id from `next_id`.
+pub fn extract_learned_patterns(
     new_pattern: &Pattern,
     covered: &[bool],
-    new_pattern_id: u32,
-) -> Option<Pattern> {
-    let learned_symbols: Vec<Symbol> = new_pattern
-        .symbols
-        .iter()
-        .zip(covered.iter())
-        .filter(|(_, &cov)| cov)
-        .map(|(s, _)| s.clone())
-        .collect();
-    if learned_symbols.len() >= 2 {
-        Some(Pattern::new(learned_symbols, new_pattern_id))
-    } else {
-        None
+    next_id: &mut u32,
+) -> Vec<Pattern> {
+    let symbols = &new_pattern.symbols;
+    let n = symbols.len();
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < n {
+        if covered[i] {
+            let start = i;
+            while i < n && covered[i] {
+                i += 1;
+            }
+            if i - start >= 2 {
+                let span = symbols[start..i].to_vec();
+                result.push(Pattern::new(span, *next_id));
+                *next_id += 1;
+            }
+        } else {
+            i += 1;
+        }
     }
+    result
 }
 
 /// Compute total E (uncovered position costs) using DP optimal tiling.
@@ -808,6 +813,72 @@ fn compute_total_t_for_patterns(
                 .unwrap_or_else(|| new_ids.iter().map(|&id| costs[id as usize]).sum())
         })
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sym(id: u32) -> Symbol {
+        Symbol::new(id)
+    }
+
+    fn pat(ids: &[u32]) -> Pattern {
+        Pattern::new(ids.iter().map(|&id| sym(id)).collect(), 0)
+    }
+
+    #[test]
+    fn contiguous_full_coverage() {
+        // covered = [T,T,T] → one span [0,1,2]
+        let p = pat(&[0, 1, 2]);
+        let mut id = 10u32;
+        let spans = extract_learned_patterns(&p, &[true, true, true], &mut id);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].symbols.iter().map(|s| s.name).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(id, 11);
+    }
+
+    #[test]
+    fn gap_produces_two_spans() {
+        // covered = [T,T,F,T,T] → spans [0,1] and [3,4]
+        let p = pat(&[0, 1, 2, 3, 4]);
+        let mut id = 1u32;
+        let spans = extract_learned_patterns(&p, &[true, true, false, true, true], &mut id);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].symbols.iter().map(|s| s.name).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(spans[1].symbols.iter().map(|s| s.name).collect::<Vec<_>>(), vec![3, 4]);
+        assert_eq!(id, 3);
+    }
+
+    #[test]
+    fn single_symbol_spans_discarded() {
+        // covered = [T,F,T] → both spans length 1, nothing returned
+        let p = pat(&[0, 1, 2]);
+        let mut id = 5u32;
+        let spans = extract_learned_patterns(&p, &[true, false, true], &mut id);
+        assert!(spans.is_empty());
+        assert_eq!(id, 5, "id counter must not advance for discarded spans");
+    }
+
+    #[test]
+    fn no_coverage_returns_empty() {
+        let p = pat(&[0, 1, 2]);
+        let mut id = 1u32;
+        let spans = extract_learned_patterns(&p, &[false, false, false], &mut id);
+        assert!(spans.is_empty());
+        assert_eq!(id, 1);
+    }
+
+    #[test]
+    fn mixed_gap_at_start_and_end() {
+        // covered = [F,T,T,T,F] → one span [1,2,3]
+        let p = pat(&[0, 1, 2, 3, 4]);
+        let mut id = 7u32;
+        let spans = extract_learned_patterns(&p, &[false, true, true, true, false], &mut id);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].symbols.iter().map(|s| s.name).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(id, 8);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
