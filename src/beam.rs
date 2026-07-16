@@ -99,10 +99,30 @@ impl PartialAlignment {
         next
     }
 
-    fn can_extend(&self, old_idx: usize, old_pos: usize, new_pos: usize) -> bool {
+    fn can_extend(
+        &self,
+        old_idx: usize,
+        old_pos: usize,
+        new_pos: usize,
+        patterns: &[&Pattern],
+    ) -> bool {
+        let pat = patterns[old_idx];
         match self.new_cursors.get(&old_idx) {
             None => old_pos == 0 && new_pos >= self.max_covered_new,
-            Some(&prev_new) => old_pos > 0 && new_pos == prev_new + 1,
+            Some(&prev_new) => {
+                if old_pos == 0 {
+                    // Fresh restart of same pattern — must not overlap prior matches.
+                    new_pos >= self.max_covered_new
+                } else if pat.gaps.is_empty() {
+                    // Advancing within a contiguous pattern.
+                    new_pos == prev_new + 1
+                } else {
+                    // Advancing within a gap pattern — check constraint.
+                    let gap = &pat.gaps[old_pos - 1];
+                    let skip = new_pos.saturating_sub(prev_new + 1);
+                    skip >= gap.min && skip <= gap.max
+                }
+            }
         }
     }
 
@@ -149,9 +169,11 @@ pub fn beam_search(
     let mut symbol_to_old: HashMap<u32, Vec<(usize, usize)>> = HashMap::new();
     for (oi, pat) in old.iter().enumerate() {
         for (pos, sym_ref) in pat.symbols.iter().enumerate() {
-            if let crate::model::SymbolRef::Atom(sym) = sym_ref {
-                symbol_to_old.entry(*sym).or_default().push((oi, pos));
-            }
+            let id = match sym_ref {
+                crate::model::SymbolRef::Atom(id) => *id,
+                crate::model::SymbolRef::Pattern(id) => *id,
+            };
+            symbol_to_old.entry(id).or_default().push((oi, pos));
         }
     }
 
@@ -167,7 +189,7 @@ pub fn beam_search(
 
             if let Some(matches) = symbol_to_old.get(&sym) {
                 for &(oi, q) in matches {
-                    if candidate.can_extend(oi, q, p) {
+                    if candidate.can_extend(oi, q, p, old) {
                         next_candidates
                             .push(candidate.extend_match(oi, q, p, sym_cost, &mut arena));
                     }
@@ -326,6 +348,80 @@ mod tests {
             best.e_cost > 0.0,
             "interleaved pattern: must not fully cover [A,C,B,D] with [A,B] and [C,D]"
         );
+    }
+
+    #[test]
+    fn single_symbol_pattern_matches_twice() {
+        // old = [[A]], new = [A, B, A]
+        // Pattern [A] should cover new[0] and new[2]. E = cost(B).
+        let new = vec![0u32, 1u32, 0u32];
+        let p0 = contiguous_pattern(0, &[0u32]);
+        let old_refs = vec![&p0];
+        let costs = vec![1.0, 1.0];
+        let results = beam_search(&new, &old_refs, 10, &costs);
+        let best = &results[0];
+        assert!(best.covered[0], "A at new[0] should be covered");
+        assert!(!best.covered[1], "B at new[1] should not be covered");
+        assert!(best.covered[2], "A at new[2] should be covered");
+        assert_eq!(best.e_cost, 1.0);
+    }
+
+    fn gap_pattern(id: u32, atoms: &[u32], max_gap: usize) -> Pattern {
+        assert_eq!(atoms.len(), 2, "gap_pattern helper only supports 2-symbol patterns");
+        Pattern::new_with_gaps(
+            id,
+            atoms.iter().map(|&a| SymbolRef::Atom(a)).collect(),
+            vec![crate::model::GapConstraint::up_to(max_gap)],
+            0,
+        )
+    }
+
+    #[test]
+    fn gap_match_within_window_both_covered() {
+        // Pattern [A,B] gap(0,2), new=[A,X,B] → skip=1 in [0,2] → both covered
+        let new = vec![0u32, 1u32, 2u32]; // A=0, X=1, B=2
+        let p0 = gap_pattern(0, &[0u32, 2u32], 2);
+        let old_refs = vec![&p0];
+        let costs = vec![1.0, 1.0, 1.0];
+        let results = beam_search(&new, &old_refs, 10, &costs);
+        let best = &results[0];
+        assert!(best.covered[0], "A at new[0] must be covered");
+        assert!(!best.covered[1], "X at new[1] must NOT be covered (gap interior)");
+        assert!(best.covered[2], "B at new[2] must be covered");
+        assert!((best.e_cost - 1.0).abs() < 1e-10, "e_cost must be cost(X)=1.0");
+    }
+
+    #[test]
+    fn gap_too_wide_not_covered() {
+        // Pattern [A,B] gap(0,2), new=[A,X,Y,Z,B] → skip=3 > max=2 → B NOT covered
+        let new = vec![0u32, 1u32, 2u32, 3u32, 4u32]; // A=0, X=1, Y=2, Z=3, B=4
+        let p0 = gap_pattern(0, &[0u32, 4u32], 2);
+        let old_refs = vec![&p0];
+        let costs = vec![1.0; 5];
+        let results = beam_search(&new, &old_refs, 10, &costs);
+        let best = &results[0];
+        assert!(
+            !best.covered[4] || !best.covered[0],
+            "gap too wide: A+B must not both be covered together"
+        );
+        // At minimum B at new[4] must not be covered as part of the gap pattern
+        // since skip=3 exceeds max=2
+        assert!(best.e_cost > 0.0, "e_cost must be > 0 when gap is too wide");
+    }
+
+    #[test]
+    fn gap_wrong_order_not_covered() {
+        // Pattern [A,B] gap(0,2), new=[B,A] → wrong order, neither covered together
+        let new = vec![2u32, 0u32]; // B=2, A=0
+        let p0 = gap_pattern(0, &[0u32, 2u32], 2);
+        let old_refs = vec![&p0];
+        let costs = vec![1.0; 3];
+        let results = beam_search(&new, &old_refs, 10, &costs);
+        let best = &results[0];
+        // A at new[1] starts a fresh match (old_pos=0), B at new[0] can't follow
+        // So at most one of A/B is covered (A alone from a single-symbol perspective)
+        // But since pattern [A,B] has 2 symbols, both can't be matched out of order
+        assert!(best.e_cost > 0.0, "wrong order: e_cost must be > 0");
     }
 
     #[test]

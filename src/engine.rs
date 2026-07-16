@@ -25,6 +25,7 @@ pub struct Spma {
     pub grammar: Grammar,
     beam_k: usize,
     atom_costs: Vec<f64>,
+    max_induced_gap: usize,
 }
 
 impl Spma {
@@ -33,7 +34,12 @@ impl Spma {
             grammar: Grammar::default(),
             beam_k,
             atom_costs: Vec::new(),
+            max_induced_gap: MAX_INDUCED_GAP,
         }
+    }
+
+    pub fn set_max_induced_gap(&mut self, max: usize) {
+        self.max_induced_gap = max;
     }
 
     pub fn set_anomaly_threshold(&mut self, threshold: f64) {
@@ -106,8 +112,17 @@ impl Spma {
         let mut all_id_vecs: Vec<Vec<u32>> = Vec::new();
 
         for (ngram, _freq) in &ngrams {
-            // MDL gate: does adding this pattern reduce T = G + E?
-            let pattern_cost: f64 = ngram.iter().map(|&id| costs[id as usize]).sum();
+            // Gap-encoded candidates: [sym_i, GAP_MARKER, gap_size, sym_j]
+            let is_gap_candidate = ngram.len() == 4 && ngram[1] == GAP_MARKER;
+
+            // For MDL gating, the atom IDs used in the pattern (not sentinels)
+            let atom_ids: Vec<u32> = if is_gap_candidate {
+                vec![ngram[0], ngram[3]]
+            } else {
+                ngram.clone()
+            };
+
+            let pattern_cost: f64 = atom_ids.iter().map(|&id| costs[id as usize]).sum();
             let new_g: f64 = all_id_vecs
                 .iter()
                 .flat_map(|v| v.iter())
@@ -117,22 +132,35 @@ impl Spma {
             let current_e = compute_total_e_dp(&atom_seqs, &all_id_vecs, &costs);
             let current_t = new_g - pattern_cost + current_e;
 
+            // For dp matching, gap patterns reduce to their two flanking atoms
+            let matching_vec = atom_ids.clone();
             let mut candidate_multi = all_id_vecs.clone();
-            candidate_multi.push(ngram.clone());
+            candidate_multi.push(matching_vec.clone());
             let new_e = compute_total_e_dp(&atom_seqs, &candidate_multi, &costs);
             let new_t = new_g + new_e;
 
             if new_t < current_t || all_id_vecs.is_empty() {
-                let symbols: Vec<SymbolRef> =
-                    ngram.iter().map(|&id| SymbolRef::Atom(id)).collect();
-                let mut pat = Pattern::new_contiguous(next_id, symbols, 0);
-                pat.frequency = ngrams
+                let freq = ngrams
                     .iter()
                     .find(|(n, _)| n == ngram)
                     .map(|(_, f)| *f)
                     .unwrap_or(1);
+                let pat = if is_gap_candidate {
+                    let gap_size = ngram[2] as usize;
+                    let symbols = vec![SymbolRef::Atom(ngram[0]), SymbolRef::Atom(ngram[3])];
+                    let gaps = vec![crate::model::GapConstraint::up_to(gap_size)];
+                    let mut p = Pattern::new_with_gaps(next_id, symbols, gaps, 0);
+                    p.frequency = freq;
+                    p
+                } else {
+                    let symbols: Vec<SymbolRef> =
+                        ngram.iter().map(|&id| SymbolRef::Atom(id)).collect();
+                    let mut p = Pattern::new_contiguous(next_id, symbols, 0);
+                    p.frequency = freq;
+                    p
+                };
                 level0_patterns.push(pat);
-                all_id_vecs.push(ngram.clone());
+                all_id_vecs.push(matching_vec);
                 next_id += 1;
             }
         }
@@ -140,12 +168,28 @@ impl Spma {
         // If cold-start found nothing, push at least the most frequent bigram
         if level0_patterns.is_empty() && !ngrams.is_empty() {
             let (ngram, freq) = &ngrams[0];
-            let symbols: Vec<SymbolRef> =
-                ngram.iter().map(|&id| SymbolRef::Atom(id)).collect();
-            let mut pat = Pattern::new_contiguous(next_id, symbols, 0);
-            pat.frequency = *freq;
+            let is_gap = ngram.len() == 4 && ngram[1] == GAP_MARKER;
+            let pat = if is_gap {
+                let gap_size = ngram[2] as usize;
+                let symbols = vec![SymbolRef::Atom(ngram[0]), SymbolRef::Atom(ngram[3])];
+                let gaps = vec![crate::model::GapConstraint::up_to(gap_size)];
+                let mut p = Pattern::new_with_gaps(next_id, symbols, gaps, 0);
+                p.frequency = *freq;
+                p
+            } else {
+                let symbols: Vec<SymbolRef> =
+                    ngram.iter().map(|&id| SymbolRef::Atom(id)).collect();
+                let mut p = Pattern::new_contiguous(next_id, symbols, 0);
+                p.frequency = *freq;
+                p
+            };
+            let matching_vec = if is_gap {
+                vec![ngram[0], ngram[3]]
+            } else {
+                ngram.clone()
+            };
             level0_patterns.push(pat);
-            all_id_vecs.push(ngram.clone());
+            all_id_vecs.push(matching_vec);
             next_id += 1;
         }
 
@@ -171,13 +215,29 @@ impl Spma {
                 .collect();
 
             let mut all_match_logs: Vec<Vec<crate::beam::MatchEvent>> = Vec::new();
-            for best_opt in raw_results {
+            let mut gap_candidates: Vec<Pattern> = Vec::new();
+
+            for (seq_idx, best_opt) in raw_results.into_iter().enumerate() {
                 if let Some(best) = best_opt {
                     let used_idxs: std::collections::HashSet<usize> =
                         best.match_log.iter().map(|e| e.old_idx).collect();
                     for &oi in &used_idxs {
                         self.grammar.levels[level].patterns[oi].frequency += 1;
                     }
+
+                    // Harvest gap patterns from covered array
+                    let seq = &current_atom_seqs[seq_idx];
+                    let seq_symbols: Vec<SymbolRef> =
+                        seq.iter().map(|&id| SymbolRef::Atom(id)).collect();
+                    let seq_as_pat = Pattern::new_contiguous(u32::MAX, seq_symbols, level as u8);
+                    let new_gaps = extract_learned_patterns(
+                        &seq_as_pat,
+                        &best.covered,
+                        &mut next_id,
+                        self.max_induced_gap,
+                    );
+                    gap_candidates.extend(new_gaps);
+
                     all_match_logs.push(best.match_log);
                 } else {
                     all_match_logs.push(Vec::new());
@@ -185,8 +245,24 @@ impl Spma {
             }
 
             // Build next-level pid sequences from match logs
-            let next_level_pats =
+            let mut next_level_pats =
                 build_next_level_patterns(&all_match_logs, &self.grammar, level, &mut next_id);
+
+            // Add gap candidates to the pool (dedup by symbol fingerprint)
+            let mut seen_fingerprints: std::collections::HashSet<Vec<u32>> = next_level_pats
+                .iter()
+                .map(|p| p.symbols.iter().map(|s| match s {
+                    SymbolRef::Atom(id) | SymbolRef::Pattern(id) => *id,
+                }).collect())
+                .collect();
+            for pat in gap_candidates {
+                let fp: Vec<u32> = pat.symbols.iter().map(|s| match s {
+                    SymbolRef::Atom(id) | SymbolRef::Pattern(id) => *id,
+                }).collect();
+                if seen_fingerprints.insert(fp) {
+                    next_level_pats.push(pat);
+                }
+            }
 
             if next_level_pats.is_empty() {
                 break;
@@ -534,7 +610,11 @@ impl Spma {
 
 // ── extract_frequent_ngrams ───────────────────────────────────────────────────
 
-/// Count all contiguous bigrams and trigrams; return those with count >= min_freq.
+const GAP_MARKER: u32 = u32::MAX;
+const MAX_INDUCED_GAP: usize = 3;
+
+/// Count contiguous bigrams/trigrams and gap-aware pairs within a window.
+/// Gap candidates encoded as [sym_i, GAP_MARKER, gap_size, sym_j].
 pub fn extract_frequent_ngrams(
     seqs: &[Vec<u32>],
     min_freq: usize,
@@ -542,11 +622,22 @@ pub fn extract_frequent_ngrams(
     let mut counts: HashMap<Vec<u32>, u32> = HashMap::new();
 
     for seq in seqs {
+        // Contiguous bigrams and trigrams
         for n in 2..=3usize {
             if seq.len() >= n {
                 for window in seq.windows(n) {
                     *counts.entry(window.to_vec()).or_insert(0) += 1;
                 }
+            }
+        }
+
+        // Gap-aware pairs within window
+        let len = seq.len();
+        for i in 0..len {
+            for j in (i + 2)..=(i + MAX_INDUCED_GAP + 1).min(len - 1) {
+                let gap_size = (j - i - 1) as u32;
+                let key = vec![seq[i], GAP_MARKER, gap_size, seq[j]];
+                *counts.entry(key).or_insert(0) += 1;
             }
         }
     }
@@ -611,6 +702,150 @@ fn build_next_level_patterns(
             pat
         })
         .collect()
+}
+
+// ── extract_learned_patterns ──────────────────────────────────────────────────
+
+fn contiguous_spans(covered: &[bool]) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut start = None;
+    for (i, &c) in covered.iter().enumerate() {
+        match (c, start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                spans.push((s, i));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        spans.push((s, covered.len()));
+    }
+    spans
+}
+
+fn merge_close_spans(spans: Vec<(usize, usize)>, max_gap: usize) -> Vec<Vec<(usize, usize)>> {
+    if spans.is_empty() {
+        return vec![];
+    }
+    let mut groups: Vec<Vec<(usize, usize)>> = Vec::new();
+    let mut current_group = vec![spans[0]];
+
+    for &span in &spans[1..] {
+        let prev_end = current_group.last().unwrap().1;
+        let gap = span.0.saturating_sub(prev_end);
+        if gap <= max_gap {
+            current_group.push(span);
+        } else {
+            groups.push(current_group);
+            current_group = vec![span];
+        }
+    }
+    groups.push(current_group);
+    groups
+}
+
+fn extract_learned_patterns(
+    pattern: &Pattern,
+    covered: &[bool],
+    next_id: &mut u32,
+    max_gap: usize,
+) -> Vec<Pattern> {
+    let spans = contiguous_spans(covered);
+    if spans.is_empty() {
+        return vec![];
+    }
+    let groups = merge_close_spans(spans, max_gap);
+    let mut result = Vec::new();
+
+    for sub_spans in groups {
+        // Count total covered symbols in this group
+        let total_oc: usize = sub_spans.iter().map(|&(s, e)| e - s).sum();
+        if total_oc < 2 {
+            continue;
+        }
+
+        if sub_spans.len() == 1 {
+            // Single contiguous span — emit contiguous pattern
+            let (start, end) = sub_spans[0];
+            let symbols: Vec<SymbolRef> = (start..end)
+                .map(|i| pattern.symbols[i])
+                .collect();
+            let pat = Pattern::new_contiguous(*next_id, symbols, pattern.level);
+            *next_id += 1;
+            result.push(pat);
+        } else {
+            // Multiple sub-spans — emit gap pattern
+            let mut symbols: Vec<SymbolRef> = Vec::new();
+            let mut gaps: Vec<crate::model::GapConstraint> = Vec::new();
+
+            for (si, &(start, end)) in sub_spans.iter().enumerate() {
+                // Add symbols from this span
+                for i in start..end {
+                    symbols.push(pattern.symbols[i]);
+                }
+                // Add gap constraint between this span and the next
+                if si + 1 < sub_spans.len() {
+                    let next_start = sub_spans[si + 1].0;
+                    let actual_gap = next_start - end;
+                    // Within span: no gaps needed (contiguous)
+                    // Between sub-spans: one gap constraint after last symbol of this span
+                    // We need one GapConstraint per adjacent symbol pair that crosses a sub-span boundary
+                    // The gap sits between symbols[end-1] and symbols[next_start]
+                    // We need (end - start - 1) contiguous constraints within span (already handled by no gaps)
+                    // plus one gap constraint at the boundary
+                    // Since within a span symbols are contiguous, only one gap per span boundary
+                    // But gaps.len() must == symbols.len() - 1, so we need one per adjacent pair
+                    // Within a span: GapConstraint{0,0} (contiguous)
+                    let span_len = end - start;
+                    // We already pushed span_len symbols; need span_len-1 within-span gaps
+                    // + 1 cross-span gap. But we build gaps aligned with symbols as we go.
+                    // Rebuild: after adding within-span symbols above, add intra-span gaps
+                    // (0,0) for all but last, then the cross-span gap.
+                    // Actually easier: build symbols first, then build gaps in a second pass.
+                    // Let's use a different approach below.
+                    let _ = actual_gap; // will rebuild
+                    let _ = span_len;
+                    gaps.clear(); // will rebuild properly
+                    break;
+                }
+            }
+
+            // Rebuild properly: symbols then gaps
+            symbols.clear();
+            for &(start, end) in &sub_spans {
+                for i in start..end {
+                    symbols.push(pattern.symbols[i]);
+                }
+            }
+
+            gaps.clear();
+            let mut sym_idx = 0;
+            for (si, &(start, end)) in sub_spans.iter().enumerate() {
+                let span_len = end - start;
+                // Within-span: contiguous (gap 0,0) for each adjacent pair
+                for _ in 0..span_len.saturating_sub(1) {
+                    gaps.push(crate::model::GapConstraint::new(0, 0));
+                }
+                sym_idx += span_len;
+                // Cross-span gap
+                if si + 1 < sub_spans.len() {
+                    let next_start = sub_spans[si + 1].0;
+                    let actual_gap = next_start - end;
+                    gaps.push(crate::model::GapConstraint::new(0, actual_gap));
+                }
+            }
+            let _ = sym_idx;
+
+            debug_assert_eq!(gaps.len(), symbols.len() - 1);
+            let pat = Pattern::new_with_gaps(*next_id, symbols, gaps, pattern.level);
+            *next_id += 1;
+            result.push(pat);
+        }
+    }
+
+    result
 }
 
 // ── compute_total_e_dp ────────────────────────────────────────────────────────
@@ -796,6 +1031,62 @@ mod tests {
             novel.anomaly_percentile > 0.0,
             "novel sequence anomaly_percentile must be > 0.0, got {}",
             novel.anomaly_percentile
+        );
+    }
+
+    #[test]
+    fn test_extract_learned_patterns_gap_merge() {
+        // covered=[T,T,F,F,T,T], max_gap=3 → gap=2 ≤ 3 → one gap pattern
+        use crate::model::{Pattern, SymbolRef};
+        let symbols: Vec<SymbolRef> = (0u32..6).map(SymbolRef::Atom).collect();
+        let pat = Pattern::new_contiguous(0, symbols, 0);
+        let covered = vec![true, true, false, false, true, true];
+        let mut next_id = 1u32;
+        let result = extract_learned_patterns(&pat, &covered, &mut next_id, 3);
+        assert_eq!(result.len(), 1, "should produce one gap pattern");
+        assert_eq!(result[0].symbols.len(), 4, "symbols: sym0,sym1,sym4,sym5");
+        assert!(!result[0].gaps.is_empty(), "must have gap constraints");
+        // gap between span[0..2] and span[4..6] = 2
+        let cross_gap = result[0].gaps.iter().find(|g| g.max > 0);
+        assert!(cross_gap.is_some(), "must have a cross-span gap constraint");
+        assert_eq!(cross_gap.unwrap().max, 2, "gap max must be 2");
+    }
+
+    #[test]
+    fn test_extract_learned_patterns_gap_too_wide() {
+        // covered=[T,T,F,F,F,F,T,T], max_gap=3 → gap=4 > 3 → two separate patterns
+        use crate::model::{Pattern, SymbolRef};
+        let symbols: Vec<SymbolRef> = (0u32..8).map(SymbolRef::Atom).collect();
+        let pat = Pattern::new_contiguous(0, symbols, 0);
+        let covered = vec![true, true, false, false, false, false, true, true];
+        let mut next_id = 1u32;
+        let result = extract_learned_patterns(&pat, &covered, &mut next_id, 3);
+        assert_eq!(result.len(), 2, "gap too wide: must produce two separate patterns");
+        assert!(result[0].gaps.is_empty(), "first pattern must be contiguous");
+        assert!(result[1].gaps.is_empty(), "second pattern must be contiguous");
+        assert_eq!(result[0].symbols.len(), 2);
+        assert_eq!(result[1].symbols.len(), 2);
+    }
+
+    #[test]
+    fn test_integration_gap_pattern_learned() {
+        // Corpus: 10× ["TRIP", X_varies, "RESTORATION"]
+        // X varies so no contiguous bigram TRIP+X or X+RESTORATION is frequent
+        // But TRIP and RESTORATION always co-occur with gap=1
+        // set_max_induced_gap(1) → should learn gap pattern
+        let xs = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
+        let corpus: Vec<Vec<&str>> = xs
+            .iter()
+            .map(|x| vec!["TRIP", x, "RESTORATION"])
+            .collect();
+        let mut spma = Spma::new(10);
+        spma.set_max_induced_gap(1);
+        spma.train(&corpus);
+        let result = spma.infer(&["TRIP", "Y", "RESTORATION"]);
+        assert!(
+            result.e_norm < 1.0,
+            "TRIP+RESTORATION gap pattern: e_norm must be < 1.0, got {}",
+            result.e_norm
         );
     }
 
