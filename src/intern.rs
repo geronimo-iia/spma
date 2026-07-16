@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Interner {
     map: HashMap<String, u32>,
     names: Vec<String>,
@@ -40,6 +41,11 @@ impl Interner {
 
     pub fn is_empty(&self) -> bool {
         self.names.is_empty()
+    }
+
+    /// Look up an existing symbol ID without inserting. Returns `None` if unknown.
+    pub fn get(&self, s: &str) -> Option<u32> {
+        self.map.get(s).copied()
     }
 }
 
