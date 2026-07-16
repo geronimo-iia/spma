@@ -38,6 +38,7 @@ pub struct Alignment {
     pub rows: Vec<AlignmentRow>,
     pub covered: Vec<bool>,
     pub e_cost: f64,
+    pub cd: f64,
     pub level_costs: Vec<f64>,
 }
 
@@ -162,6 +163,7 @@ pub fn build_alignment(
         rows,
         covered: raw.covered.clone(),
         e_cost: raw.e_cost,
+        cd: raw.cd,
         level_costs: Vec::new(),
     }
 }
@@ -208,7 +210,8 @@ impl fmt::Display for Alignment {
             writeln!(f)?;
         }
 
-        write!(f, "E: {:.1} bits", self.e_cost)
+        let t = self.e_cost;
+        write!(f, "---\nE: {:.1} bits   CD: {:.1} bits   T: {:.1} bits", self.e_cost, self.cd, t)
     }
 }
 
@@ -323,6 +326,8 @@ mod tests {
         assert!(s.contains("A"), "display must contain 'A'");
         assert!(s.contains("B"), "display must contain 'B'");
         assert!(s.contains("E:"), "display must contain 'E:'");
+        assert!(s.contains("CD:"), "display must contain 'CD:'");
+        assert!(s.contains("T:"), "display must contain 'T:'");
     }
 
     #[test]
