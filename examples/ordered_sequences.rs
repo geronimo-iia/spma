@@ -11,33 +11,24 @@
 //! This does NOT work when:
 //!   - Multiple sequence variants are in the corpus — grammar learns shorter,
 //!     more flexible patterns that can stitch across reorderings.
-//!   - Boundary markers (< >) are added — they appear in every sequence so
-//!     their Shannon cost approaches 0, providing no anomaly signal.
-//!
-//! For robust order detection, use boundary markers combined with position-
-//! specific unique IDs (#pos_0, #pos_1, ...) so each position has a distinct
-//! high-cost anchor. That is not demonstrated here as it requires corpus design
-//! discipline beyond the scope of this example.
 
 use spma::Spma;
 
-fn main() -> anyhow::Result<()> {
+fn main() {
     // ── Homogeneous corpus: order detection works ────────────────────────────
 
     println!("=== Homogeneous corpus (single sequence type × 8) ===\n");
 
-    let mut engine = Spma::new();
+    let mut engine = Spma::new(10);
     engine.train(
         &(0..8)
             .map(|_| vec!["TRIP_A", "BREAKER_OPEN", "UNDERVOLTAGE", "BACKUP_RELAY"])
             .collect::<Vec<_>>(),
-    )?;
+    );
 
     let cases: Vec<(&str, Vec<&str>)> = vec![
         (
-            // TRIP_A not in grammar → cost=0 at inference → E=0 despite uncovered.
-            // Symbols that don't enter any grammar pattern are zero-cost at inference.
-            "Normal (E=0; note some symbols may show as unmatched at zero cost)",
+            "Normal",
             vec!["TRIP_A", "BREAKER_OPEN", "UNDERVOLTAGE", "BACKUP_RELAY"],
         ),
         (
@@ -49,17 +40,18 @@ fn main() -> anyhow::Result<()> {
             vec!["TRIP_A", "BREAKER_OPEN", "GROUNDFAULT", "BACKUP_RELAY"],
         ),
         (
-            "Missing symbol — NOT detected (all remaining symbols still covered)",
+            "Missing symbol — NOT detected (remaining symbols still covered)",
             vec!["TRIP_A", "BREAKER_OPEN", "BACKUP_RELAY"],
         ),
     ];
 
     for (label, seq) in &cases {
-        let r = engine.infer(seq)?;
+        let r = engine.infer(seq);
         let tag = if r.is_anomaly { "ANOMALY" } else { "OK     " };
         println!("[{tag}]  E={:.3}  CD={:+.3}  — {label}", r.e_cost, r.cd);
-        if !r.unmatched.is_empty() {
-            println!("         unmatched: {}", r.unmatched.join(", "));
+        let unmatched = r.alignment.unmatched_symbols();
+        if !unmatched.is_empty() {
+            println!("         unmatched: {}", unmatched.join(", "));
         }
     }
 
@@ -68,7 +60,7 @@ fn main() -> anyhow::Result<()> {
     println!("\n=== Varied corpus (4 variants × 8) ===\n");
     println!("Grammar learns shorter patterns that stitch across reorderings.\n");
 
-    let mut engine2 = Spma::new();
+    let mut engine2 = Spma::new(10);
     engine2.train(
         &(0..8)
             .flat_map(|_| {
@@ -80,7 +72,7 @@ fn main() -> anyhow::Result<()> {
                 ]
             })
             .collect::<Vec<_>>(),
-    )?;
+    );
 
     let cases2: Vec<(&str, Vec<&str>)> = vec![
         (
@@ -88,8 +80,6 @@ fn main() -> anyhow::Result<()> {
             vec!["TRIP_A", "BREAKER_OPEN", "UNDERVOLTAGE", "BACKUP_RELAY"],
         ),
         (
-            // Partial detection: some symbols still unmatched, but less than full reorder.
-            // Multi-pattern stitching reduces E vs homogeneous case.
             "Reordered — partially detected (multi-pattern stitching reduces E)",
             vec!["BACKUP_RELAY", "UNDERVOLTAGE", "BREAKER_OPEN", "TRIP_A"],
         ),
@@ -100,21 +90,17 @@ fn main() -> anyhow::Result<()> {
     ];
 
     for (label, seq) in &cases2 {
-        let r = engine2.infer(seq)?;
+        let r = engine2.infer(seq);
         let tag = if r.is_anomaly { "ANOMALY" } else { "OK     " };
         println!("[{tag}]  E={:.3}  CD={:+.3}  — {label}", r.e_cost, r.cd);
-        if !r.unmatched.is_empty() {
-            println!("         unmatched: {}", r.unmatched.join(", "));
+        let unmatched = r.alignment.unmatched_symbols();
+        if !unmatched.is_empty() {
+            println!("         unmatched: {}", unmatched.join(", "));
         }
     }
 
     println!("\nSummary:");
-    println!("  - Unknown symbols:    always detected (unknown_penalty applied)");
-    println!("  - Order violations:   detected with homogeneous corpus; weaker with varied");
-    println!("  - Missing symbols:    not detected (remaining symbols still covered)");
-    println!("  - Extra symbols:      detected only if the extra symbol is unknown");
-    println!("  - Zero-cost symbols:  symbols not in any grammar pattern cost 0 at");
-    println!("    inference — uncovered but E=0 (limitation, see known-issues)");
-
-    Ok(())
+    println!("  - Unknown symbols:  always detected");
+    println!("  - Order violations: detected with homogeneous corpus; weaker with varied");
+    println!("  - Missing symbols:  not detected (remaining symbols still covered)");
 }
