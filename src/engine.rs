@@ -7,6 +7,12 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
 use std::fs;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrammarLevel {
+    pub old_patterns: Vec<Pattern>,
+    pub corpus_costs: Vec<f64>,
+}
+
 fn collect_frequencies(freqs: &mut HashMap<u32, u32>, patterns: &[Pattern]) {
     for pattern in patterns {
         for symbol in &pattern.symbols {
@@ -150,6 +156,8 @@ pub struct SpmaEngine {
 
     pub max_cycles: u32,
     pub keep_rows: u32,
+    pub grammar_levels: Vec<GrammarLevel>,
+    pub max_levels_safety_cap: u8,
 }
 
 impl Default for SpmaEngine {
@@ -176,6 +184,8 @@ impl SpmaEngine {
             verbose: false,
             max_cycles: 1000,
             keep_rows: 5,
+            grammar_levels: Vec::new(),
+            max_levels_safety_cap: 16,
         }
     }
 
@@ -285,7 +295,7 @@ impl SpmaEngine {
     }
 
     pub fn run_recognition_cycle_beam(&mut self, new_pattern: &Pattern) -> Option<BeamAlignment> {
-        let max_id = self.interner.len();
+        let max_id = self.interner.len().max(self.next_pattern_id as usize + 1);
         let mut costs = vec![0.0f64; max_id];
         for p in &self.old_patterns {
             for s in &p.symbols {
@@ -314,6 +324,7 @@ impl SpmaEngine {
     pub fn learn(&mut self, input_patterns: Vec<Pattern>) -> Result<LearningResults> {
         self.new_patterns = input_patterns;
         self.old_patterns.clear();
+        self.grammar_levels.clear();
 
         // Initial cost assignment
         self.symbol_frequencies.clear();
@@ -491,7 +502,8 @@ impl SpmaEngine {
 
         // Snapshot corpus-level costs from new_patterns. Used at inference as fallback
         // for symbols not absorbed into any grammar pattern (which would otherwise cost 0).
-        let max_id = self.interner.len();
+        // Size to cover both interned atom IDs and pattern IDs (next_pattern_id).
+        let max_id = self.interner.len().max(self.next_pattern_id as usize + 1);
         self.corpus_costs = vec![0.0f64; max_id];
         for p in &self.new_patterns {
             for s in &p.symbols {
@@ -501,10 +513,73 @@ impl SpmaEngine {
             }
         }
 
+        // ── N-level outer loop ──────────────────────────────────────────────────
+        // Save level-0 state — learn_one_level overwrites self.old_patterns/new_patterns
+        let level0_old = self.old_patterns.clone();
+        let level0_new = self.new_patterns.clone();
+
+        let mut current_new = self.new_patterns.clone();
+        let mut current_old = self.old_patterns.clone();
+        let mut current_costs = self.corpus_costs.clone();
+
+        loop {
+            // Safety circuit-breaker — expected termination is MDL-driven (viable==0 or next_old.is_empty()).
+            if self.grammar_levels.len() >= self.max_levels_safety_cap as usize {
+                break;
+            }
+
+            let next_new = build_next_level_patterns(
+                &current_new,
+                &current_old,
+                self.keep_rows as usize,
+                &current_costs,
+                &mut self.next_pattern_id,
+            );
+
+            // Natural termination: nothing to compress at this level.
+            let viable = next_new.iter().filter(|p| p.symbols.len() >= 2).count();
+            if viable == 0 {
+                break;
+            }
+
+            let (next_old, next_costs) = self.learn_one_level(next_new.clone())?;
+
+            // Natural termination: MDL gate rejected everything — no repeated structure.
+            if next_old.is_empty() {
+                break;
+            }
+
+            self.grammar_levels.push(GrammarLevel {
+                old_patterns: next_old.clone(),
+                corpus_costs: next_costs.clone(),
+            });
+
+            current_new = next_new;
+            current_old = next_old;
+            current_costs = next_costs;
+        }
+
+        // Restore level-0 state (inference uses self.old_patterns for level-0)
+        self.old_patterns = level0_old;
+        self.new_patterns = level0_new;
+        // ── end N-level loop ────────────────────────────────────────────────────
+
+        // Recompute symbol_frequencies from restored level-0 state so that
+        // only atom IDs (known to the interner) are present in the map.
+        self.symbol_frequencies.clear();
+        collect_frequencies(&mut self.symbol_frequencies, &self.old_patterns);
+        collect_frequencies(&mut self.symbol_frequencies, &self.new_patterns);
+
         let string_frequencies: HashMap<String, u32> = self
             .symbol_frequencies
             .iter()
-            .map(|(&id, &freq)| (self.interner.name(id).to_owned(), freq))
+            .filter_map(|(&id, &freq)| {
+                if (id as usize) < self.interner.len() {
+                    Some((self.interner.name(id).to_owned(), freq))
+                } else {
+                    None
+                }
+            })
             .collect();
 
         Ok(LearningResults {
@@ -624,6 +699,259 @@ impl SpmaEngine {
         added
     }
 
+    fn extract_frequent_ngrams_ids(&mut self, patterns: &[Pattern], min_freq: u32) -> bool {
+        let mut ngram_counts: HashMap<Vec<u32>, u32> = HashMap::new();
+        for pat in patterns {
+            let ids: Vec<u32> = pat.symbols.iter().map(|s| s.raw_id()).collect();
+            for n in 2..=3 {
+                if ids.len() >= n {
+                    for window in ids.windows(n) {
+                        *ngram_counts.entry(window.to_vec()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        let max_id = self.next_pattern_id as usize;
+        let mut costs = vec![0.0f64; max_id.max(1)];
+        for p in self.old_patterns.iter().chain(self.new_patterns.iter()) {
+            for s in &p.symbols {
+                let id = s.raw_id() as usize;
+                if id < costs.len() {
+                    costs[id] = s.bit_cost;
+                }
+            }
+        }
+
+        let mut candidates: Vec<(Vec<u32>, u32)> = ngram_counts
+            .into_iter()
+            .filter(|(_, count)| *count >= min_freq)
+            .collect();
+        candidates.sort_by(|a, b| {
+            let cost_a: f64 = a.0.iter().map(|&id| costs.get(id as usize).copied().unwrap_or(0.0)).sum();
+            let cost_b: f64 = b.0.iter().map(|&id| costs.get(id as usize).copied().unwrap_or(0.0)).sum();
+            let save_a = (a.1 as f64 - 1.0) * cost_a;
+            let save_b = (b.1 as f64 - 1.0) * cost_b;
+            save_b.partial_cmp(&save_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let new_id_vecs: Vec<Vec<u32>> = self
+            .new_patterns
+            .iter()
+            .map(|p| p.symbols.iter().map(|s| s.raw_id()).collect())
+            .collect();
+
+        let mut added = false;
+        for (ngram, count) in &candidates {
+            let is_dup = self.old_patterns.iter().any(|p| {
+                let p_ids: Vec<u32> = p.symbols.iter().map(|s| s.raw_id()).collect();
+                p_ids == *ngram
+            });
+            if is_dup || *count < min_freq {
+                continue;
+            }
+
+            let current_multi: Vec<Vec<u32>> = self
+                .old_patterns
+                .iter()
+                .filter(|p| p.symbols.len() >= 2)
+                .map(|p| p.symbols.iter().map(|s| s.raw_id()).collect())
+                .collect();
+            let current_g: f64 = self
+                .old_patterns
+                .iter()
+                .filter(|p| p.symbols.len() >= 2)
+                .flat_map(|p| p.symbols.iter())
+                .map(|s| costs.get(s.raw_id() as usize).copied().unwrap_or(0.0))
+                .sum();
+            let current_e = compute_total_e_dp(&new_id_vecs, &current_multi, &costs);
+            let current_t = current_g + current_e;
+
+            let pattern_cost: f64 = ngram.iter()
+                .map(|&id| costs.get(id as usize).copied().unwrap_or(0.0))
+                .sum();
+            let mut new_multi = current_multi.clone();
+            new_multi.push(ngram.clone());
+            let new_g = current_g + pattern_cost;
+            let new_e = compute_total_e_dp(&new_id_vecs, &new_multi, &costs);
+            let new_t = new_g + new_e;
+
+            if new_t < current_t {
+                let symbols: Vec<Symbol> = ngram
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &id)| {
+                        let mut s = Symbol::new_pattern_ref(id);
+                        s.position = i as i32;
+                        s
+                    })
+                    .collect();
+                let mut pat = Pattern::new(symbols, self.next_pattern_id);
+                pat.frequency = *count;
+                self.next_pattern_id += 1;
+                self.old_patterns.push(pat);
+                added = true;
+            }
+        }
+
+        added
+    }
+
+    fn learn_one_level(&mut self, new_pats: Vec<Pattern>) -> Result<(Vec<Pattern>, Vec<f64>)> {
+        self.new_patterns = new_pats;
+        self.old_patterns.clear();
+
+        self.symbol_frequencies.clear();
+        collect_frequencies(&mut self.symbol_frequencies, &self.new_patterns);
+        apply_symbol_costs(&self.symbol_frequencies, &mut self.new_patterns);
+
+        let mut total_cycles = 0u32;
+
+        loop {
+            total_cycles += 1;
+            let old_count_before = self.old_patterns.len();
+
+            let new_patterns_snapshot = self.new_patterns.clone();
+            let mut candidates: HashMap<Vec<u32>, u32> = HashMap::new();
+            for new_pattern in &new_patterns_snapshot {
+                let best_opt = self.run_recognition_cycle_beam(new_pattern);
+                if let Some(best) = best_opt {
+                    if best.cd > 0.0 {
+                        for &oi in &best.old_pattern_indices {
+                            if oi < self.old_patterns.len() {
+                                self.old_patterns[oi].frequency += 1;
+                            }
+                        }
+                        for learned in extract_learned_patterns(
+                            new_pattern,
+                            &best.covered_new,
+                            &mut self.next_pattern_id,
+                        ) {
+                            let learned_ids: Vec<u32> =
+                                learned.symbols.iter().map(|s| s.raw_id()).collect();
+                            *candidates.entry(learned_ids).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
+
+            {
+                let max_id = self.next_pattern_id as usize;
+                let mut costs = vec![0.0f64; max_id.max(1)];
+                for p in self.old_patterns.iter().chain(self.new_patterns.iter()) {
+                    for s in &p.symbols {
+                        let id = s.raw_id() as usize;
+                        if id < costs.len() {
+                            costs[id] = s.bit_cost;
+                        }
+                    }
+                }
+                let new_id_vecs: Vec<Vec<u32>> = self
+                    .new_patterns
+                    .iter()
+                    .map(|p| p.symbols.iter().map(|s| s.raw_id()).collect())
+                    .collect();
+
+                let mut sorted_candidates: Vec<(Vec<u32>, u32)> = candidates.into_iter().collect();
+                sorted_candidates.sort_by(|a, b| {
+                    let cost_a: f64 = a.0.iter().map(|&id| costs.get(id as usize).copied().unwrap_or(0.0)).sum();
+                    let cost_b: f64 = b.0.iter().map(|&id| costs.get(id as usize).copied().unwrap_or(0.0)).sum();
+                    let save_a = (a.1 as f64 - 1.0) * cost_a;
+                    let save_b = (b.1 as f64 - 1.0) * cost_b;
+                    save_b.partial_cmp(&save_a).unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+                let mut current_multi: Vec<Vec<u32>> = self
+                    .old_patterns
+                    .iter()
+                    .filter(|p| p.symbols.len() >= 2)
+                    .map(|p| p.symbols.iter().map(|s| s.raw_id()).collect())
+                    .collect();
+                let mut current_g: f64 = current_multi
+                    .iter()
+                    .flat_map(|p| p.iter())
+                    .map(|&id| costs.get(id as usize).copied().unwrap_or(0.0))
+                    .sum();
+                let mut current_e = compute_total_e_dp(&new_id_vecs, &current_multi, &costs);
+                let mut current_t = current_g + current_e;
+
+                for (ngram, _count) in &sorted_candidates {
+                    let is_dup = current_multi.iter().any(|p| p == ngram);
+                    if is_dup { continue; }
+
+                    let pattern_cost: f64 = ngram.iter()
+                        .map(|&id| costs.get(id as usize).copied().unwrap_or(0.0))
+                        .sum();
+                    let mut new_multi = current_multi.clone();
+                    new_multi.push(ngram.clone());
+                    let new_g = current_g + pattern_cost;
+                    let new_e = compute_total_e_dp(&new_id_vecs, &new_multi, &costs);
+                    let new_t = new_g + new_e;
+
+                    if new_t < current_t {
+                        let symbols: Vec<Symbol> = ngram
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &id)| {
+                                let mut s = Symbol::new_pattern_ref(id);
+                                s.position = i as i32;
+                                s
+                            })
+                            .collect();
+                        let mut pat = Pattern::new(symbols, self.next_pattern_id);
+                        pat.frequency = 1;
+                        self.next_pattern_id += 1;
+                        self.old_patterns.push(pat);
+                        current_multi.push(ngram.clone());
+                        current_g = new_g;
+                        current_e = new_e;
+                        current_t = new_t;
+                    }
+                }
+            }
+
+            let has_multi_symbol = self.old_patterns.iter().any(|p| p.symbols.len() >= 2);
+            let added_this_cycle = if !has_multi_symbol {
+                self.extract_frequent_ngrams_ids(&self.new_patterns.clone(), 2)
+            } else {
+                false
+            };
+
+            self.symbol_frequencies.clear();
+            collect_frequencies(&mut self.symbol_frequencies, &self.old_patterns);
+            collect_frequencies(&mut self.symbol_frequencies, &self.new_patterns);
+            apply_symbol_costs(&self.symbol_frequencies, &mut self.old_patterns);
+            apply_symbol_costs(&self.symbol_frequencies, &mut self.new_patterns);
+
+            let old_grew = self.old_patterns.len() > old_count_before;
+            if !old_grew && !added_this_cycle {
+                break;
+            }
+            if total_cycles >= self.max_cycles {
+                eprintln!(
+                    "spma: learn_one_level truncated at max_cycles={} without convergence",
+                    self.max_cycles
+                );
+                break;
+            }
+        }
+
+        // Snapshot corpus costs for this level
+        let max_id = self.next_pattern_id as usize;
+        let mut level_corpus_costs = vec![0.0f64; max_id.max(1)];
+        for p in &self.new_patterns {
+            for s in &p.symbols {
+                let id = s.raw_id() as usize;
+                if id < level_corpus_costs.len() && s.bit_cost > 0.0 {
+                    level_corpus_costs[id] = s.bit_cost;
+                }
+            }
+        }
+
+        let old_patterns = self.old_patterns.clone();
+        Ok((old_patterns, level_corpus_costs))
+    }
+
     /// Compute compression ratio using global MDL formula:
     /// - global_G = cost of storing grammar (all old patterns, each counted once)
     /// - global_E = sum of uncovered symbol costs across all new patterns
@@ -738,6 +1066,64 @@ pub fn extract_learned_patterns(
         }
     }
     result
+}
+
+fn build_next_level_patterns(
+    new_pats: &[Pattern],
+    old_pats: &[Pattern],
+    keep_rows: usize,
+    costs: &[f64],
+    next_id: &mut u32,
+) -> Vec<Pattern> {
+    let old_id_vecs: Vec<Vec<u32>> = old_pats
+        .iter()
+        .map(|p| p.symbols.iter().map(|s| s.raw_id()).collect())
+        .collect();
+
+    new_pats
+        .iter()
+        .filter_map(|np| {
+            let ids: Vec<u32> = np.symbols.iter().map(|s| s.raw_id()).collect();
+            if ids.is_empty() {
+                return None;
+            }
+
+            let best = beam_search(&ids, &old_id_vecs, keep_rows, costs)
+                .into_iter()
+                .next()?;
+
+            // Extract used pattern IDs ordered by first covered New position
+            let mut pid_starts: Vec<(u32, usize)> = best
+                .old_pattern_indices
+                .iter()
+                .filter_map(|&oi| {
+                    let pid = old_pats[oi].pattern_id;
+                    let start = ids
+                        .iter()
+                        .enumerate()
+                        .find(|&(i, &sym_id)| {
+                            best.covered_new[i] && old_id_vecs[oi].contains(&sym_id)
+                        })
+                        .map(|(i, _)| i)?;
+                    Some((pid, start))
+                })
+                .collect();
+            pid_starts.sort_by_key(|&(_, s)| s);
+            let pid_seq: Vec<u32> = pid_starts.into_iter().map(|(pid, _)| pid).collect();
+
+            if pid_seq.is_empty() {
+                return None;
+            }
+
+            let symbols: Vec<Symbol> = pid_seq
+                .iter()
+                .map(|&pid| Symbol::new_pattern_ref(pid))
+                .collect();
+            let pat = Pattern::new(symbols, *next_id);
+            *next_id += 1;
+            Some(pat)
+        })
+        .collect()
 }
 
 /// Compute total E (uncovered position costs) using DP optimal tiling.
