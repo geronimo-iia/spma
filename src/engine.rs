@@ -1,6 +1,7 @@
 // Phase 1d — see docs/grammar-spec.md, docs/roadmap.md
 
 use std::collections::HashMap;
+use std::io::{self, Read as IoRead, Write as IoWrite};
 
 use crate::alignment::{build_alignment, Alignment};
 use crate::beam::{beam_search, RawAlignment};
@@ -21,6 +22,7 @@ pub struct InferResult {
 
 // ── Spma ──────────────────────────────────────────────────────────────────────
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Spma {
     pub grammar: Grammar,
     beam_k: usize,
@@ -48,6 +50,14 @@ impl Spma {
 
     pub fn e_distribution(&self) -> &crate::model::EDistribution {
         &self.grammar.e_distribution
+    }
+
+    pub fn save<W: IoWrite>(&self, writer: W) -> io::Result<()> {
+        serde_json::to_writer(writer, self).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    }
+
+    pub fn load<R: IoRead>(reader: R) -> io::Result<Self> {
+        serde_json::from_reader(reader).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
     }
 
     fn infer_internal(&self, seq: &[u32]) -> (f64, f64) {
@@ -1175,6 +1185,36 @@ mod tests {
             result.e_norm < 1e-10,
             "perfectly covered sequence must have e_norm == 0.0, got {}",
             result.e_norm
+        );
+    }
+
+    #[test]
+    fn test_serialization_roundtrip() {
+        let corpus = make_corpus(vec!["A", "B", "C", "A", "B", "C"], 3);
+        let mut spma = Spma::new(5);
+        spma.train(&corpus);
+
+        let mut buf = Vec::new();
+        spma.save(&mut buf).expect("save failed");
+
+        let loaded = Spma::load(buf.as_slice()).expect("load failed");
+
+        assert_eq!(spma.beam_k, loaded.beam_k);
+        assert_eq!(spma.max_induced_gap, loaded.max_induced_gap);
+        assert_eq!(spma.atom_costs, loaded.atom_costs);
+        assert_eq!(
+            spma.grammar.levels.len(),
+            loaded.grammar.levels.len(),
+            "level count must match"
+        );
+
+        let original = spma.infer(&["A", "B", "C"]);
+        let restored = loaded.infer(&["A", "B", "C"]);
+        assert!(
+            (original.e_norm - restored.e_norm).abs() < 1e-12,
+            "e_norm diverged after roundtrip: {} vs {}",
+            original.e_norm,
+            restored.e_norm
         );
     }
 }
