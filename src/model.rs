@@ -214,8 +214,8 @@ impl EDistribution {
         if self.sorted_e_norms.is_empty() {
             return 0.0;
         }
-        let idx = ((q * self.sorted_e_norms.len() as f64) as usize)
-            .min(self.sorted_e_norms.len() - 1);
+        let idx =
+            ((q * self.sorted_e_norms.len() as f64) as usize).min(self.sorted_e_norms.len() - 1);
         self.sorted_e_norms[idx]
     }
 
@@ -269,7 +269,10 @@ impl Grammar {
 
     /// Atom-level patterns (level 0). Returns empty slice if no levels yet.
     pub fn atom_patterns(&self) -> &[Pattern] {
-        self.levels.first().map(|l| l.patterns.as_slice()).unwrap_or(&[])
+        self.levels
+            .first()
+            .map(|l| l.patterns.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Patterns at a given level. Returns empty slice if level does not exist.

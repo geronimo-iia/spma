@@ -1,4 +1,4 @@
-use spma::{Spma, model::SymbolRef};
+use spma::{model::SymbolRef, Spma};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -27,7 +27,10 @@ fn repeated_sequences_grammar_nonempty_pattern_covers() {
     );
 
     let has_multi = level0.patterns.iter().any(|p| p.symbols.len() >= 2);
-    assert!(has_multi, "at least one level-0 pattern must have >= 2 symbols");
+    assert!(
+        has_multi,
+        "at least one level-0 pattern must have >= 2 symbols"
+    );
 
     let result = spma.infer(&["A", "B", "C", "A", "B", "C"]);
     assert!(
@@ -92,25 +95,31 @@ fn rare_symbol_costs_more_than_frequent() {
 #[test]
 fn gap_pattern_induced_from_varying_middle() {
     let base: &[(&str, &str, &str)] = &[
-        ("TRIP", "OVERCURRENT",  "RESTORATION"),
+        ("TRIP", "OVERCURRENT", "RESTORATION"),
         ("TRIP", "UNDERVOLTAGE", "RESTORATION"),
-        ("TRIP", "EARTH_FAULT",  "RESTORATION"),
-        ("TRIP", "PHASE_FAULT",  "RESTORATION"),
+        ("TRIP", "EARTH_FAULT", "RESTORATION"),
+        ("TRIP", "PHASE_FAULT", "RESTORATION"),
     ];
     // Each of the 4 base entries repeated twice → 8 sequences total
     let corpus: Vec<Vec<&str>> = base
         .iter()
-        .flat_map(|(a, b, c)| {
-            vec![vec![*a, *b, *c], vec![*a, *b, *c]]
-        })
+        .flat_map(|(a, b, c)| vec![vec![*a, *b, *c], vec![*a, *b, *c]])
         .collect();
 
     let mut spma = Spma::new(5);
     spma.set_max_induced_gap(1);
     spma.train(&corpus);
 
-    let trip_id = spma.grammar.interner.get("TRIP").expect("TRIP must be interned");
-    let rest_id = spma.grammar.interner.get("RESTORATION").expect("RESTORATION must be interned");
+    let trip_id = spma
+        .grammar
+        .interner
+        .get("TRIP")
+        .expect("TRIP must be interned");
+    let rest_id = spma
+        .grammar
+        .interner
+        .get("RESTORATION")
+        .expect("RESTORATION must be interned");
 
     let level0 = &spma.grammar.levels[0];
 
@@ -153,9 +162,10 @@ fn multilevel_level1_pattern_induced() {
         "level-1 patterns must not be empty"
     );
 
-    let has_pattern_ref = level1.patterns.iter().any(|p| {
-        p.symbols.iter().any(|s| matches!(s, SymbolRef::Pattern(_)))
-    });
+    let has_pattern_ref = level1
+        .patterns
+        .iter()
+        .any(|p| p.symbols.iter().any(|s| matches!(s, SymbolRef::Pattern(_))));
     assert!(
         has_pattern_ref,
         "level-1 patterns must reference SymbolRef::Pattern symbols"

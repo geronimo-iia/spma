@@ -20,7 +20,10 @@ fn best(new: &[u32], patterns: &[&Pattern], k: usize, costs: &[f64]) -> RawAlign
                 bc.cmp(&ac)
             })
     });
-    results.into_iter().next().expect("beam_search returned empty")
+    results
+        .into_iter()
+        .next()
+        .expect("beam_search returned empty")
 }
 
 // Scenario 1: contiguous_exact_match
@@ -52,7 +55,10 @@ fn contiguous_partial_match() {
     assert!(r.covered[0], "A must be covered");
     assert!(r.covered[1], "B must be covered");
     assert!(!r.covered[2], "C must not be covered");
-    assert!((r.e_cost - 2.0).abs() < 1e-10, "e_cost must be 2.0 (cost of C)");
+    assert!(
+        (r.e_cost - 2.0).abs() < 1e-10,
+        "e_cost must be 2.0 (cost of C)"
+    );
     assert_eq!(r.match_log.len(), 2, "match_log must have 2 events");
 }
 
@@ -68,10 +74,20 @@ fn gap_match_within_window() {
     let costs = make_costs(3, 1.0);
     let r = best(&new, &old, 10, &costs);
     assert!(r.covered[0], "A at new[0] must be covered");
-    assert!(!r.covered[1], "X at new[1] must not be covered (gap interior)");
+    assert!(
+        !r.covered[1],
+        "X at new[1] must not be covered (gap interior)"
+    );
     assert!(r.covered[2], "B at new[2] must be covered");
-    assert!((r.e_cost - 1.0).abs() < 1e-10, "e_cost must be 1.0 (cost of X)");
-    assert_eq!(r.match_log.len(), 2, "match_log must have 2 events (A and B only)");
+    assert!(
+        (r.e_cost - 1.0).abs() < 1e-10,
+        "e_cost must be 1.0 (cost of X)"
+    );
+    assert_eq!(
+        r.match_log.len(),
+        2,
+        "match_log must have 2 events (A and B only)"
+    );
 }
 
 // Scenario 4: gap_rejected_when_skip_exceeds_max
@@ -119,7 +135,10 @@ fn two_non_overlapping_patterns() {
     let costs = make_costs(4, 1.0);
     let r = best(&new, &old, 20, &costs);
     assert_eq!(r.e_cost, 0.0, "e_cost must be 0.0: all symbols covered");
-    assert!(r.covered.iter().all(|&c| c), "all positions must be covered");
+    assert!(
+        r.covered.iter().all(|&c| c),
+        "all positions must be covered"
+    );
     let has_p0 = r.match_log.iter().any(|e| e.old_idx == 0);
     let has_p1 = r.match_log.iter().any(|e| e.old_idx == 1);
     assert!(has_p0, "match_log must contain events from old_idx=0 (P0)");
@@ -139,6 +158,9 @@ fn single_symbol_pattern_matches_twice() {
     assert!(r.covered[0], "A at new[0] must be covered");
     assert!(!r.covered[1], "X at new[1] must not be covered");
     assert!(r.covered[2], "A at new[2] must be covered");
-    assert!((r.e_cost - 2.0).abs() < 1e-10, "e_cost must be 2.0 (cost of X)");
+    assert!(
+        (r.e_cost - 2.0).abs() < 1e-10,
+        "e_cost must be 2.0 (cost of X)"
+    );
     assert_eq!(r.match_log.len(), 2, "match_log must have 2 events");
 }

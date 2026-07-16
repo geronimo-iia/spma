@@ -147,7 +147,11 @@ fn set_anomaly_threshold_gates_is_anomaly() {
 
     // Novel symbol produces e_norm > 0
     let result = spma.infer(&["A", "X", "C"]);
-    assert!(result.e_norm > 0.0, "novel symbol must produce e_norm > 0, got {}", result.e_norm);
+    assert!(
+        result.e_norm > 0.0,
+        "novel symbol must produce e_norm > 0, got {}",
+        result.e_norm
+    );
 
     // With threshold above e_norm: not an anomaly
     spma.set_anomaly_threshold(0.5);

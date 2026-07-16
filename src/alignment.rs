@@ -192,8 +192,11 @@ impl fmt::Display for Alignment {
             let label = format!("{}(L{})", row.pattern_label, row.level);
             write!(f, "{:<width$}  ", label, width = label_width)?;
 
-            let cell_map: HashMap<usize, &str> =
-                row.cells.iter().map(|c| (c.new_pos, c.content.as_str())).collect();
+            let cell_map: HashMap<usize, &str> = row
+                .cells
+                .iter()
+                .map(|c| (c.new_pos, c.content.as_str()))
+                .collect();
 
             for i in 0..self.new_symbols.len() {
                 let content = cell_map.get(&i).copied().unwrap_or(".");
@@ -203,7 +206,11 @@ impl fmt::Display for Alignment {
         }
 
         let t = self.e_cost;
-        write!(f, "---\nE: {:.1} bits   CD: {:.1} bits   T: {:.1} bits", self.e_cost, self.cd, t)
+        write!(
+            f,
+            "---\nE: {:.1} bits   CD: {:.1} bits   T: {:.1} bits",
+            self.e_cost, self.cd, t
+        )
     }
 }
 
@@ -212,7 +219,7 @@ impl fmt::Display for Alignment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::beam::{MatchEvent, RawAlignment, beam_search};
+    use crate::beam::{beam_search, MatchEvent, RawAlignment};
     use crate::intern::Interner;
     use crate::model::{GapConstraint, Pattern, SymbolRef};
 
@@ -341,8 +348,18 @@ mod tests {
 
         let raw = RawAlignment {
             match_log: vec![
-                MatchEvent { old_idx: 0, old_pos: 0, new_pos: 0, cost: 1.0 },
-                MatchEvent { old_idx: 0, old_pos: 1, new_pos: 2, cost: 1.0 },
+                MatchEvent {
+                    old_idx: 0,
+                    old_pos: 0,
+                    new_pos: 0,
+                    cost: 1.0,
+                },
+                MatchEvent {
+                    old_idx: 0,
+                    old_pos: 1,
+                    new_pos: 2,
+                    cost: 1.0,
+                },
             ],
             covered: vec![true, false, true],
             e_cost: 1.0,

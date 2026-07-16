@@ -215,10 +215,7 @@ pub fn beam_search(
         .into_iter()
         .map(|c| c.finalize(new, costs, &arena))
         .collect();
-    results.sort_by(|a, b| {
-        b.cd.partial_cmp(&a.cd)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    results.sort_by(|a, b| b.cd.partial_cmp(&a.cd).unwrap_or(std::cmp::Ordering::Equal));
     results
 }
 
@@ -230,26 +227,37 @@ mod tests {
     use crate::model::{Pattern, SymbolRef};
 
     fn contiguous_pattern(id: u32, atoms: &[u32]) -> Pattern {
-        Pattern::new_contiguous(
-            id,
-            atoms.iter().map(|&a| SymbolRef::Atom(a)).collect(),
-            0,
-        )
+        Pattern::new_contiguous(id, atoms.iter().map(|&a| SymbolRef::Atom(a)).collect(), 0)
     }
 
     #[test]
     fn test_arena_fork() {
         let mut arena = MatchArena::new();
         let root = arena.push(
-            MatchEvent { old_idx: 0, old_pos: 0, new_pos: 0, cost: 1.0 },
+            MatchEvent {
+                old_idx: 0,
+                old_pos: 0,
+                new_pos: 0,
+                cost: 1.0,
+            },
             None,
         );
         let branch_a = arena.push(
-            MatchEvent { old_idx: 0, old_pos: 1, new_pos: 1, cost: 2.0 },
+            MatchEvent {
+                old_idx: 0,
+                old_pos: 1,
+                new_pos: 1,
+                cost: 2.0,
+            },
             Some(root),
         );
         let branch_b = arena.push(
-            MatchEvent { old_idx: 1, old_pos: 0, new_pos: 2, cost: 3.0 },
+            MatchEvent {
+                old_idx: 1,
+                old_pos: 0,
+                new_pos: 2,
+                cost: 3.0,
+            },
             Some(root),
         );
 
@@ -330,7 +338,10 @@ mod tests {
         let costs = vec![1.0, 1.0, 1.0, 1.0];
         let results = beam_search(&new, &old_refs, 20, &costs);
         let best = &results[0];
-        assert_eq!(best.e_cost, 0.0, "correct order: all symbols must be covered");
+        assert_eq!(
+            best.e_cost, 0.0,
+            "correct order: all symbols must be covered"
+        );
         assert!(best.covered.iter().all(|&c| c));
     }
 
@@ -367,7 +378,11 @@ mod tests {
     }
 
     fn gap_pattern(id: u32, atoms: &[u32], max_gap: usize) -> Pattern {
-        assert_eq!(atoms.len(), 2, "gap_pattern helper only supports 2-symbol patterns");
+        assert_eq!(
+            atoms.len(),
+            2,
+            "gap_pattern helper only supports 2-symbol patterns"
+        );
         Pattern::new_with_gaps(
             id,
             atoms.iter().map(|&a| SymbolRef::Atom(a)).collect(),
@@ -386,9 +401,15 @@ mod tests {
         let results = beam_search(&new, &old_refs, 10, &costs);
         let best = &results[0];
         assert!(best.covered[0], "A at new[0] must be covered");
-        assert!(!best.covered[1], "X at new[1] must NOT be covered (gap interior)");
+        assert!(
+            !best.covered[1],
+            "X at new[1] must NOT be covered (gap interior)"
+        );
         assert!(best.covered[2], "B at new[2] must be covered");
-        assert!((best.e_cost - 1.0).abs() < 1e-10, "e_cost must be cost(X)=1.0");
+        assert!(
+            (best.e_cost - 1.0).abs() < 1e-10,
+            "e_cost must be cost(X)=1.0"
+        );
     }
 
     #[test]

@@ -59,7 +59,10 @@ fn infer_same_sequence_twice_identical_results() {
 
     assert_eq!(r1.e_cost, r2.e_cost, "e_cost must be deterministic");
     assert_eq!(r1.e_norm, r2.e_norm, "e_norm must be deterministic");
-    assert_eq!(r1.is_anomaly, r2.is_anomaly, "is_anomaly must be deterministic");
+    assert_eq!(
+        r1.is_anomaly, r2.is_anomaly,
+        "is_anomaly must be deterministic"
+    );
     assert_eq!(r1.cd, r2.cd, "cd must be deterministic");
     assert_eq!(
         r1.alignment.covered, r2.alignment.covered,
@@ -75,6 +78,12 @@ fn infer_same_sequence_twice_identical_results() {
     let u1 = spma.infer(&["X", "Y", "Z"]);
     let u2 = spma.infer(&["X", "Y", "Z"]);
 
-    assert_eq!(u1.e_cost, u2.e_cost, "unknown: e_cost must be deterministic");
-    assert_eq!(u1.e_norm, u2.e_norm, "unknown: e_norm must be deterministic");
+    assert_eq!(
+        u1.e_cost, u2.e_cost,
+        "unknown: e_cost must be deterministic"
+    );
+    assert_eq!(
+        u1.e_norm, u2.e_norm,
+        "unknown: e_norm must be deterministic"
+    );
 }

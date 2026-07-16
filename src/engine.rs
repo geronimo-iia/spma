@@ -82,7 +82,11 @@ impl Spma {
         // Step 2: build atom-level sequences and uniform costs
         let atom_seqs: Vec<Vec<u32>> = corpus
             .iter()
-            .map(|seq| seq.iter().map(|s| self.grammar.interner.intern(s)).collect())
+            .map(|seq| {
+                seq.iter()
+                    .map(|s| self.grammar.interner.intern(s))
+                    .collect()
+            })
             .collect();
 
         let n_atoms = self.grammar.interner.len();
@@ -177,8 +181,7 @@ impl Spma {
                 p.frequency = *freq;
                 p
             } else {
-                let symbols: Vec<SymbolRef> =
-                    ngram.iter().map(|&id| SymbolRef::Atom(id)).collect();
+                let symbols: Vec<SymbolRef> = ngram.iter().map(|&id| SymbolRef::Atom(id)).collect();
                 let mut p = Pattern::new_contiguous(next_id, symbols, 0);
                 p.frequency = *freq;
                 p
@@ -211,7 +214,11 @@ impl Spma {
             // Collect results first (immutable borrow ends), then update frequencies.
             let raw_results: Vec<Option<RawAlignment>> = current_atom_seqs
                 .iter()
-                .map(|seq| beam_search(seq, &level_patterns, self.beam_k, &current_costs).into_iter().next())
+                .map(|seq| {
+                    beam_search(seq, &level_patterns, self.beam_k, &current_costs)
+                        .into_iter()
+                        .next()
+                })
                 .collect();
 
             let mut all_match_logs: Vec<Vec<crate::beam::MatchEvent>> = Vec::new();
@@ -252,14 +259,23 @@ impl Spma {
             // Add gap candidates to the pool (dedup by symbol fingerprint)
             let mut seen_fingerprints: std::collections::HashSet<Vec<u32>> = next_level_pats
                 .iter()
-                .map(|p| p.symbols.iter().map(|s| match s {
-                    SymbolRef::Atom(id) | SymbolRef::Pattern(id) => *id,
-                }).collect())
+                .map(|p| {
+                    p.symbols
+                        .iter()
+                        .map(|s| match s {
+                            SymbolRef::Atom(id) | SymbolRef::Pattern(id) => *id,
+                        })
+                        .collect()
+                })
                 .collect();
             for pat in gap_candidates {
-                let fp: Vec<u32> = pat.symbols.iter().map(|s| match s {
-                    SymbolRef::Atom(id) | SymbolRef::Pattern(id) => *id,
-                }).collect();
+                let fp: Vec<u32> = pat
+                    .symbols
+                    .iter()
+                    .map(|s| match s {
+                        SymbolRef::Atom(id) | SymbolRef::Pattern(id) => *id,
+                    })
+                    .collect();
                 if seen_fingerprints.insert(fp) {
                     next_level_pats.push(pat);
                 }
@@ -287,7 +303,11 @@ impl Spma {
 
             // Costs for pattern IDs at next level — uniform based on pattern count
             let n_pats = self.grammar.levels[level].patterns.len();
-            let pid_cost = if n_pats > 1 { (n_pats as f64).log2() } else { 1.0 };
+            let pid_cost = if n_pats > 1 {
+                (n_pats as f64).log2()
+            } else {
+                1.0
+            };
             let max_pid = self.grammar.levels[level]
                 .patterns
                 .iter()
@@ -301,10 +321,14 @@ impl Spma {
             let mut accepted_pats: Vec<Pattern> = Vec::new();
 
             for pat in next_level_pats {
-                let ngram: Vec<u32> = pat.symbols.iter().map(|s| match s {
-                    SymbolRef::Pattern(id) => *id,
-                    SymbolRef::Atom(id) => *id,
-                }).collect();
+                let ngram: Vec<u32> = pat
+                    .symbols
+                    .iter()
+                    .map(|s| match s {
+                        SymbolRef::Pattern(id) => *id,
+                        SymbolRef::Atom(id) => *id,
+                    })
+                    .collect();
 
                 let current_g: f64 = next_id_vecs
                     .iter()
@@ -344,7 +368,11 @@ impl Spma {
             .iter()
             .filter_map(|seq| {
                 let (e_cost, raw) = self.infer_internal(seq);
-                if raw < 1e-12 { None } else { Some(e_cost / raw) }
+                if raw < 1e-12 {
+                    None
+                } else {
+                    Some(e_cost / raw)
+                }
             })
             .collect();
 
@@ -368,30 +396,37 @@ impl Spma {
 
                 for seq in &lvl_seqs {
                     let results = beam_search(seq, &level_patterns, self.beam_k, &lvl_costs);
-                    let pid_seq: Vec<u32> =
-                        if let Some(best) = results.into_iter().next() {
-                            let mut pid_positions: Vec<(u32, usize)> = Vec::new();
-                            for event in &best.match_log {
-                                if event.old_pos == 0 {
-                                    if let Some(pat) = level_patterns.get(event.old_idx) {
-                                        pid_positions.push((pat.id, event.new_pos));
-                                    }
+                    let pid_seq: Vec<u32> = if let Some(best) = results.into_iter().next() {
+                        let mut pid_positions: Vec<(u32, usize)> = Vec::new();
+                        for event in &best.match_log {
+                            if event.old_pos == 0 {
+                                if let Some(pat) = level_patterns.get(event.old_idx) {
+                                    pid_positions.push((pat.id, event.new_pos));
                                 }
                             }
-                            pid_positions.sort_by_key(|&(_, pos)| pos);
-                            pid_positions.dedup_by_key(|x| x.1);
-                            pid_positions.into_iter().map(|(pid, _)| pid).collect()
-                        } else {
-                            Vec::new()
-                        };
+                        }
+                        pid_positions.sort_by_key(|&(_, pos)| pos);
+                        pid_positions.dedup_by_key(|x| x.1);
+                        pid_positions.into_iter().map(|(pid, _)| pid).collect()
+                    } else {
+                        Vec::new()
+                    };
                     next_lvl_seqs.push(pid_seq);
                 }
 
                 // Build pid costs for next level
                 let n_pats = self.grammar.levels[level].patterns.len();
-                let pid_cost = if n_pats > 1 { (n_pats as f64).log2() } else { 1.0 };
+                let pid_cost = if n_pats > 1 {
+                    (n_pats as f64).log2()
+                } else {
+                    1.0
+                };
                 let max_pid = self.grammar.levels[level]
-                    .patterns.iter().map(|p| p.id as usize + 1).max().unwrap_or(1);
+                    .patterns
+                    .iter()
+                    .map(|p| p.id as usize + 1)
+                    .max()
+                    .unwrap_or(1);
                 let next_costs = vec![pid_cost; max_pid];
 
                 // Compute e_norms at next level
@@ -400,12 +435,18 @@ impl Spma {
                 let lvl_e: Vec<f64> = next_lvl_seqs
                     .iter()
                     .filter_map(|seq| {
-                        if seq.is_empty() { return None; }
-                        let raw: f64 = seq.iter()
+                        if seq.is_empty() {
+                            return None;
+                        }
+                        let raw: f64 = seq
+                            .iter()
                             .map(|&id| next_costs.get(id as usize).copied().unwrap_or(pid_cost))
                             .sum();
-                        if raw < 1e-12 { return None; }
-                        let results = beam_search(seq, &next_level_patterns, self.beam_k, &next_costs);
+                        if raw < 1e-12 {
+                            return None;
+                        }
+                        let results =
+                            beam_search(seq, &next_level_patterns, self.beam_k, &next_costs);
                         let e = results.into_iter().next().map(|r| r.e_cost).unwrap_or(raw);
                         Some(e / raw)
                     })
@@ -424,28 +465,17 @@ impl Spma {
     pub fn infer(&self, seq: &[&str]) -> InferResult {
         let n_atoms = self.grammar.interner.len();
         // Fallback cost for unknown symbols: max atom cost or 1.0
-        let fallback_cost = self
-            .atom_costs
-            .iter()
-            .cloned()
-            .fold(1.0f64, f64::max);
+        let fallback_cost = self.atom_costs.iter().cloned().fold(1.0f64, f64::max);
 
         let ids: Vec<u32> = seq
             .iter()
-            .map(|s| {
-                self.grammar
-                    .interner
-                    .get(s)
-                    .unwrap_or(n_atoms as u32)
-            })
+            .map(|s| self.grammar.interner.get(s).unwrap_or(n_atoms as u32))
             .collect();
 
         let new_names: Vec<&str> = seq.to_vec();
 
         // Extend atom_costs for unknown symbols
-        let costs_len = (n_atoms + 1).max(
-            ids.iter().map(|&id| id as usize + 1).max().unwrap_or(1),
-        );
+        let costs_len = (n_atoms + 1).max(ids.iter().map(|&id| id as usize + 1).max().unwrap_or(1));
         let mut costs: Vec<f64> = self.atom_costs.clone();
         costs.resize(costs_len, fallback_cost);
 
@@ -476,8 +506,7 @@ impl Spma {
         }
 
         // Level-0 beam search
-        let level0_patterns: Vec<&Pattern> =
-            self.grammar.levels[0].patterns.iter().collect();
+        let level0_patterns: Vec<&Pattern> = self.grammar.levels[0].patterns.iter().collect();
 
         let results = beam_search(&ids, &level0_patterns, self.beam_k, &costs);
 
@@ -500,8 +529,7 @@ impl Spma {
         let is_anomaly = e_norm > self.grammar.e_distribution.threshold;
         let anomaly_percentile = self.grammar.e_distribution.anomaly_rank(e_norm); // strict < semantics: training seqs score 0.0
 
-        let alignment =
-            build_alignment(&best_raw, &new_names, &level0_patterns, &self.grammar);
+        let alignment = build_alignment(&best_raw, &new_names, &level0_patterns, &self.grammar);
 
         // Build level_costs and level_e_norms — one entry per grammar level
         let mut level_costs: Vec<f64> = Vec::new();
@@ -509,7 +537,11 @@ impl Spma {
 
         // Level 0: reuse best_raw already computed above
         level_costs.push(e_cost);
-        level_e_norms.push(if raw_new_cost < 1e-12 { 0.0 } else { e_cost / raw_new_cost });
+        level_e_norms.push(if raw_new_cost < 1e-12 {
+            0.0
+        } else {
+            e_cost / raw_new_cost
+        });
 
         // Higher levels: use pid sequences derived from match log
         let mut current_seq = ids.clone();
@@ -519,8 +551,12 @@ impl Spma {
             // Build pid sequence from previous level beam result
             let prev_patterns: Vec<&Pattern> =
                 self.grammar.levels[level - 1].patterns.iter().collect();
-            let prev_results =
-                beam_search(&current_seq, &prev_patterns, self.beam_k, &current_costs_vec);
+            let prev_results = beam_search(
+                &current_seq,
+                &prev_patterns,
+                self.beam_k,
+                &current_costs_vec,
+            );
 
             let pid_seq: Vec<u32> = if let Some(best) = prev_results.into_iter().next() {
                 let mut pid_positions: Vec<(u32, usize)> = Vec::new();
@@ -578,11 +614,14 @@ impl Spma {
             // Extend pid_costs to cover all pattern IDs referenced
             let max_ref = pid_seq.iter().map(|&id| id as usize + 1).max().unwrap_or(1);
             let mut pid_costs_ext = pid_costs.clone();
-            let fallback_pid = if n_prev_pats > 1 { (n_prev_pats as f64).log2() } else { 1.0 };
+            let fallback_pid = if n_prev_pats > 1 {
+                (n_prev_pats as f64).log2()
+            } else {
+                1.0
+            };
             pid_costs_ext.resize(max_ref.max(pid_costs_ext.len()), fallback_pid);
 
-            let level_results =
-                beam_search(&pid_seq, &level_patterns, self.beam_k, &pid_costs_ext);
+            let level_results = beam_search(&pid_seq, &level_patterns, self.beam_k, &pid_costs_ext);
             let lc = level_results
                 .into_iter()
                 .next()
@@ -590,7 +629,11 @@ impl Spma {
                 .unwrap_or(raw_level_cost);
 
             level_costs.push(lc);
-            level_e_norms.push(if raw_level_cost < 1e-12 { 0.0 } else { lc / raw_level_cost });
+            level_e_norms.push(if raw_level_cost < 1e-12 {
+                0.0
+            } else {
+                lc / raw_level_cost
+            });
 
             current_seq = pid_seq;
             current_costs_vec = pid_costs_ext;
@@ -616,10 +659,7 @@ const MAX_INDUCED_GAP: usize = 3;
 
 /// Count contiguous bigrams/trigrams and gap-aware pairs within a window.
 /// Gap candidates encoded as [sym_i, GAP_MARKER, gap_size, sym_j].
-pub fn extract_frequent_ngrams(
-    seqs: &[Vec<u32>],
-    min_freq: usize,
-) -> Vec<(Vec<u32>, u32)> {
+pub fn extract_frequent_ngrams(seqs: &[Vec<u32>], min_freq: usize) -> Vec<(Vec<u32>, u32)> {
     let mut counts: HashMap<Vec<u32>, u32> = HashMap::new();
 
     for seq in seqs {
@@ -699,8 +739,7 @@ fn build_next_level_patterns(
             !ngram.contains(&GAP_MARKER)
         })
         .map(|(ngram, freq)| {
-            let symbols: Vec<SymbolRef> =
-                ngram.iter().map(|&id| SymbolRef::Pattern(id)).collect();
+            let symbols: Vec<SymbolRef> = ngram.iter().map(|&id| SymbolRef::Pattern(id)).collect();
             let mut pat = Pattern::new_contiguous(*next_id, symbols, (level + 1) as u8);
             pat.frequency = freq;
             *next_id += 1;
@@ -775,9 +814,7 @@ fn extract_learned_patterns(
         if sub_spans.len() == 1 {
             // Single contiguous span — emit contiguous pattern
             let (start, end) = sub_spans[0];
-            let symbols: Vec<SymbolRef> = (start..end)
-                .map(|i| pattern.symbols[i])
-                .collect();
+            let symbols: Vec<SymbolRef> = (start..end).map(|i| pattern.symbols[i]).collect();
             let pat = Pattern::new_contiguous(*next_id, symbols, target_level);
             *next_id += 1;
             result.push(pat);
@@ -893,14 +930,21 @@ mod tests {
         let corpus = make_corpus(vec!["A", "B", "C", "A", "B", "C"], 3);
         let mut spma = Spma::new(5);
         spma.train(&corpus);
-        assert!(!spma.grammar.levels.is_empty(), "grammar must have at least one level");
+        assert!(
+            !spma.grammar.levels.is_empty(),
+            "grammar must have at least one level"
+        );
         let level0 = &spma.grammar.levels[0];
         let has_ab_or_bc = level0.patterns.iter().any(|p| {
             p.symbols.len() >= 2 && {
-                let ids: Vec<u32> = p.symbols.iter().map(|s| match s {
-                    SymbolRef::Atom(id) => *id,
-                    SymbolRef::Pattern(id) => *id,
-                }).collect();
+                let ids: Vec<u32> = p
+                    .symbols
+                    .iter()
+                    .map(|s| match s {
+                        SymbolRef::Atom(id) => *id,
+                        SymbolRef::Pattern(id) => *id,
+                    })
+                    .collect();
                 // Check if the pattern spans at least A+B or B+C in any valid sequence
                 ids.windows(2).any(|w| {
                     // Just verify it's a multi-symbol pattern — specific IDs depend on intern order
@@ -934,7 +978,10 @@ mod tests {
         let mut spma = Spma::new(5);
         spma.train(&corpus);
         let result = spma.infer(&["X", "Y", "Z"]);
-        assert!(result.e_cost > 0.0, "unknown sequence must have positive e_cost");
+        assert!(
+            result.e_cost > 0.0,
+            "unknown sequence must have positive e_cost"
+        );
     }
 
     #[test]
@@ -1067,9 +1114,19 @@ mod tests {
         let covered = vec![true, true, false, false, false, false, true, true];
         let mut next_id = 1u32;
         let result = extract_learned_patterns(&pat, &covered, &mut next_id, 3, 0);
-        assert_eq!(result.len(), 2, "gap too wide: must produce two separate patterns");
-        assert!(result[0].gaps.is_empty(), "first pattern must be contiguous");
-        assert!(result[1].gaps.is_empty(), "second pattern must be contiguous");
+        assert_eq!(
+            result.len(),
+            2,
+            "gap too wide: must produce two separate patterns"
+        );
+        assert!(
+            result[0].gaps.is_empty(),
+            "first pattern must be contiguous"
+        );
+        assert!(
+            result[1].gaps.is_empty(),
+            "second pattern must be contiguous"
+        );
         assert_eq!(result[0].symbols.len(), 2);
         assert_eq!(result[1].symbols.len(), 2);
     }
@@ -1081,10 +1138,7 @@ mod tests {
         // But TRIP and RESTORATION always co-occur with gap=1
         // set_max_induced_gap(1) → should learn gap pattern
         let xs = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
-        let corpus: Vec<Vec<&str>> = xs
-            .iter()
-            .map(|x| vec!["TRIP", x, "RESTORATION"])
-            .collect();
+        let corpus: Vec<Vec<&str>> = xs.iter().map(|x| vec!["TRIP", x, "RESTORATION"]).collect();
         let mut spma = Spma::new(10);
         spma.set_max_induced_gap(1);
         spma.train(&corpus);
