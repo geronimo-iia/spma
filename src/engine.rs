@@ -24,6 +24,7 @@ pub struct InferResult {
 pub struct Spma {
     pub grammar: Grammar,
     beam_k: usize,
+    atom_costs: Vec<f64>,
 }
 
 impl Spma {
@@ -31,7 +32,37 @@ impl Spma {
         Self {
             grammar: Grammar::default(),
             beam_k,
+            atom_costs: Vec::new(),
         }
+    }
+
+    pub fn set_anomaly_threshold(&mut self, threshold: f64) {
+        self.grammar.e_distribution.threshold = threshold;
+    }
+
+    pub fn e_distribution(&self) -> &crate::model::EDistribution {
+        &self.grammar.e_distribution
+    }
+
+    fn infer_internal(&self, seq: &[u32]) -> (f64, f64) {
+        if seq.is_empty() {
+            return (0.0, 0.0);
+        }
+        let raw_new_cost: f64 = seq
+            .iter()
+            .map(|&id| self.atom_costs.get(id as usize).copied().unwrap_or(1.0))
+            .sum();
+        if self.grammar.levels.is_empty() {
+            return (raw_new_cost, raw_new_cost);
+        }
+        let level0_patterns: Vec<&Pattern> = self.grammar.levels[0].patterns.iter().collect();
+        let results = beam_search(seq, &level0_patterns, self.beam_k, &self.atom_costs);
+        let e_cost = results
+            .into_iter()
+            .next()
+            .map(|r| r.e_cost)
+            .unwrap_or(raw_new_cost);
+        (e_cost, raw_new_cost)
     }
 
     pub fn train(&mut self, corpus: &[Vec<&str>]) {
@@ -49,9 +80,21 @@ impl Spma {
             .collect();
 
         let n_atoms = self.grammar.interner.len();
-        // Uniform cost: -log2(1/n_atoms) = log2(n_atoms), minimum 1.0
-        let atom_cost = if n_atoms > 1 { (n_atoms as f64).log2() } else { 1.0 };
-        let costs: Vec<f64> = vec![atom_cost; n_atoms];
+        // Frequency-based costs: -log2(freq/total) per atom
+        let mut atom_freq: HashMap<u32, u32> = HashMap::new();
+        let total_atoms: u32 = atom_seqs.iter().flat_map(|s| s.iter()).count() as u32;
+        for seq in &atom_seqs {
+            for &id in seq {
+                *atom_freq.entry(id).or_insert(0) += 1;
+            }
+        }
+        let costs: Vec<f64> = (0..n_atoms as u32)
+            .map(|id| {
+                let freq = atom_freq.get(&id).copied().unwrap_or(1);
+                -((freq as f64 / total_atoms as f64).log2())
+            })
+            .collect();
+        self.atom_costs = costs.clone();
 
         // Step 3: cold-start — extract frequent n-grams from atom sequences
         let min_freq = (corpus.len() / 2).max(2);
@@ -218,12 +261,31 @@ impl Spma {
             current_atom_seqs = pid_seqs;
             current_costs = pid_costs;
         }
+
+        // Populate EDistribution from training sequences
+        let e_norms: Vec<f64> = atom_seqs
+            .iter()
+            .filter_map(|seq| {
+                let (e_cost, raw) = self.infer_internal(seq);
+                if raw < 1e-12 {
+                    None
+                } else {
+                    Some(e_cost / raw)
+                }
+            })
+            .collect();
+        self.grammar.e_distribution =
+            crate::model::EDistribution::fit(e_norms, 0.0, vec![]);
     }
 
     pub fn infer(&self, seq: &[&str]) -> InferResult {
-        // Intern sequence — unknown symbols get max known cost
         let n_atoms = self.grammar.interner.len();
-        let atom_cost = if n_atoms > 1 { (n_atoms as f64).log2() } else { 1.0 };
+        // Fallback cost for unknown symbols: max atom cost or 1.0
+        let fallback_cost = self
+            .atom_costs
+            .iter()
+            .cloned()
+            .fold(1.0f64, f64::max);
 
         let ids: Vec<u32> = seq
             .iter()
@@ -231,18 +293,23 @@ impl Spma {
                 self.grammar
                     .interner
                     .get(s)
-                    .unwrap_or(n_atoms as u32) // unknown → out-of-range ID
+                    .unwrap_or(n_atoms as u32)
             })
             .collect();
 
         let new_names: Vec<&str> = seq.to_vec();
 
-        // Build costs vec — unknown symbols use atom_cost
-        let costs_len = (n_atoms + 1).max(ids.iter().map(|&id| id as usize + 1).max().unwrap_or(1));
-        let costs: Vec<f64> = vec![atom_cost; costs_len];
+        // Extend atom_costs for unknown symbols
+        let costs_len = (n_atoms + 1).max(
+            ids.iter().map(|&id| id as usize + 1).max().unwrap_or(1),
+        );
+        let mut costs: Vec<f64> = self.atom_costs.clone();
+        costs.resize(costs_len, fallback_cost);
 
-        // raw_new_cost = sum of atom costs for uncompressed sequence
-        let raw_new_cost: f64 = ids.iter().map(|_| atom_cost).sum();
+        let raw_new_cost: f64 = ids
+            .iter()
+            .map(|&id| costs.get(id as usize).copied().unwrap_or(fallback_cost))
+            .sum();
 
         if self.grammar.levels.is_empty() {
             let alignment = Alignment {
@@ -288,10 +355,111 @@ impl Spma {
         };
 
         let is_anomaly = e_norm > self.grammar.e_distribution.threshold;
-        let anomaly_percentile = self.grammar.e_distribution.percentile(e_norm);
+        let anomaly_percentile = self.grammar.e_distribution.anomaly_rank(e_norm);
 
         let alignment =
             build_alignment(&best_raw, &new_names, &level0_patterns, &self.grammar);
+
+        // Build level_costs and level_e_norms — one entry per grammar level
+        let mut level_costs: Vec<f64> = Vec::new();
+        let mut level_e_norms: Vec<f64> = Vec::new();
+
+        // Level 0: use atom ids and atom costs
+        {
+            let results0 = beam_search(&ids, &level0_patterns, self.beam_k, &costs);
+            let lc0 = results0
+                .into_iter()
+                .next()
+                .map(|r| r.e_cost)
+                .unwrap_or(raw_new_cost);
+            level_costs.push(lc0);
+            level_e_norms.push(if raw_new_cost < 1e-12 { 0.0 } else { lc0 / raw_new_cost });
+        }
+
+        // Higher levels: use pid sequences derived from match log
+        let mut current_seq = ids.clone();
+        let mut current_costs_vec = costs.clone();
+
+        for level in 1..self.grammar.levels.len() {
+            // Build pid sequence from previous level beam result
+            let prev_patterns: Vec<&Pattern> =
+                self.grammar.levels[level - 1].patterns.iter().collect();
+            let prev_results =
+                beam_search(&current_seq, &prev_patterns, self.beam_k, &current_costs_vec);
+
+            let pid_seq: Vec<u32> = if let Some(best) = prev_results.into_iter().next() {
+                let mut pid_positions: Vec<(u32, usize)> = Vec::new();
+                for event in &best.match_log {
+                    if event.old_pos == 0 {
+                        if let Some(pat) = prev_patterns.get(event.old_idx) {
+                            pid_positions.push((pat.id, event.new_pos));
+                        }
+                    }
+                }
+                pid_positions.sort_by_key(|&(_, pos)| pos);
+                pid_positions.dedup_by_key(|x| x.1);
+                pid_positions.into_iter().map(|(pid, _)| pid).collect()
+            } else {
+                Vec::new()
+            };
+
+            if pid_seq.is_empty() {
+                // Pad remaining levels with 0.0
+                for _ in level..self.grammar.levels.len() {
+                    level_costs.push(0.0);
+                    level_e_norms.push(0.0);
+                }
+                break;
+            }
+
+            // Frequency-based costs for this level's pattern IDs
+            let n_prev_pats = self.grammar.levels[level - 1].patterns.len();
+            let total_pid: u32 = pid_seq.len() as u32;
+            let mut pid_freq: HashMap<u32, u32> = HashMap::new();
+            for &pid in &pid_seq {
+                *pid_freq.entry(pid).or_insert(0) += 1;
+            }
+            let max_pid = self.grammar.levels[level - 1]
+                .patterns
+                .iter()
+                .map(|p| p.id as usize + 1)
+                .max()
+                .unwrap_or(1);
+            let pid_costs: Vec<f64> = (0..max_pid as u32)
+                .map(|id| {
+                    let freq = pid_freq.get(&id).copied().unwrap_or(1);
+                    -((freq as f64 / total_pid.max(1) as f64).log2())
+                })
+                .collect();
+
+            let raw_level_cost: f64 = pid_seq
+                .iter()
+                .map(|&id| pid_costs.get(id as usize).copied().unwrap_or(1.0))
+                .sum();
+
+            let level_patterns: Vec<&Pattern> =
+                self.grammar.levels[level].patterns.iter().collect();
+
+            // Extend pid_costs to cover all pattern IDs referenced
+            let max_ref = pid_seq.iter().map(|&id| id as usize + 1).max().unwrap_or(1);
+            let mut pid_costs_ext = pid_costs.clone();
+            let fallback_pid = if n_prev_pats > 1 { (n_prev_pats as f64).log2() } else { 1.0 };
+            pid_costs_ext.resize(max_ref.max(pid_costs_ext.len()), fallback_pid);
+
+            let level_results =
+                beam_search(&pid_seq, &level_patterns, self.beam_k, &pid_costs_ext);
+            let lc = level_results
+                .into_iter()
+                .next()
+                .map(|r| r.e_cost)
+                .unwrap_or(raw_level_cost);
+
+            level_costs.push(lc);
+            level_e_norms.push(if raw_level_cost < 1e-12 { 0.0 } else { lc / raw_level_cost });
+
+            current_seq = pid_seq;
+            current_costs_vec = pid_costs_ext;
+        }
 
         InferResult {
             e_cost,
@@ -299,8 +467,8 @@ impl Spma {
             cd,
             e_norm,
             anomaly_percentile,
-            level_costs: Vec::new(),
-            level_e_norms: Vec::new(),
+            level_costs,
+            level_e_norms,
             alignment,
         }
     }
@@ -490,5 +658,114 @@ mod tests {
         let found = ngrams.iter().find(|(ng, _)| ng == &vec![0u32, 1]);
         assert!(found.is_some(), "bigram [0,1] must be found");
         assert_eq!(found.unwrap().1, 3, "frequency must be 3");
+    }
+
+    // Phase 1e tests
+
+    #[test]
+    fn test_training_seqs_have_zero_e_norm() {
+        // 10x identical sequence → all training seqs fully covered → e_norm == 0.0
+        let seq = vec!["A", "B", "C"];
+        let corpus = make_corpus(seq.clone(), 10);
+        let mut spma = Spma::new(10);
+        spma.train(&corpus);
+        let dist = &spma.grammar.e_distribution;
+        // All training e_norms should be 0.0: percentile(0.0) should be 1.0
+        // meaning all values <= 0.0
+        let pct = dist.percentile(1e-10);
+        assert!(
+            (pct - 1.0).abs() < 1e-10,
+            "all training e_norms must be 0.0: percentile(0) should be 1.0, got {pct}"
+        );
+        // infer on training seq → e_norm == 0.0 and anomaly_percentile == 0.0
+        let result = spma.infer(&seq);
+        assert!(
+            result.e_norm < 1e-10,
+            "infer e_norm must be 0.0, got {}",
+            result.e_norm
+        );
+        assert!(
+            result.anomaly_percentile < 1e-10,
+            "anomaly_percentile must be 0.0, got {}",
+            result.anomaly_percentile
+        );
+    }
+
+    #[test]
+    fn test_frequency_costs_rare_symbol_more_expensive() {
+        // 10x "A" + 1x "B" in corpus — B is rarer → higher cost
+        let mut corpus: Vec<Vec<&str>> = vec![vec!["A", "B"]; 10];
+        corpus.push(vec!["A", "B"]);
+        // Intern A 11 times, B 11 times equally... let's do A-heavy corpus
+        // 10x ["A","A","A"] and 1x ["B","B","B"]
+        let mut spma = Spma::new(5);
+        let mut big_corpus: Vec<Vec<&str>> = vec![vec!["A", "A", "A"]; 10];
+        big_corpus.push(vec!["B", "B", "B"]);
+        spma.train(&big_corpus);
+        // A appears 30 times, B appears 3 times → cost(B) > cost(A)
+        let a_id = spma.grammar.interner.get("A").expect("A must be interned");
+        let b_id = spma.grammar.interner.get("B").expect("B must be interned");
+        let cost_a = spma.atom_costs[a_id as usize];
+        let cost_b = spma.atom_costs[b_id as usize];
+        assert!(
+            cost_b > cost_a,
+            "rare symbol B must cost more than frequent A: cost_a={cost_a}, cost_b={cost_b}"
+        );
+    }
+
+    #[test]
+    fn test_anomaly_percentile_nonzero_for_different_seq() {
+        // Train on varied corpus, infer slightly different sequence
+        let mut corpus: Vec<Vec<&str>> = Vec::new();
+        corpus.extend(vec![vec!["A", "B", "C"]; 5]);
+        corpus.extend(vec![vec!["A", "B", "D"]; 3]);
+        corpus.extend(vec![vec!["X", "Y", "Z"]; 2]);
+        let mut spma = Spma::new(5);
+        spma.train(&corpus);
+        // Infer a known sequence
+        let result = spma.infer(&["A", "B", "C"]);
+        // Distribution is non-empty, so percentile should be defined
+        // A known sequence should have low e_norm, and percentile may be > 0
+        // Just assert distribution is populated and anomaly_percentile is in [0,1]
+        assert!(
+            result.anomaly_percentile >= 0.0 && result.anomaly_percentile <= 1.0,
+            "anomaly_percentile must be in [0,1], got {}",
+            result.anomaly_percentile
+        );
+        // Infer a completely novel sequence — should have higher percentile
+        let novel = spma.infer(&["Q", "Q", "Q"]);
+        assert!(
+            novel.anomaly_percentile > 0.0,
+            "novel sequence anomaly_percentile must be > 0.0, got {}",
+            novel.anomaly_percentile
+        );
+    }
+
+    #[test]
+    fn test_level_costs_len_matches_grammar_levels() {
+        let seq = vec!["A", "B", "C", "A", "B", "C"];
+        let corpus = make_corpus(seq.clone(), 6);
+        let mut spma = Spma::new(5);
+        spma.train(&corpus);
+        let result = spma.infer(&seq);
+        assert_eq!(
+            result.level_costs.len(),
+            spma.grammar.levels.len(),
+            "level_costs.len() must equal grammar.levels.len()"
+        );
+    }
+
+    #[test]
+    fn test_e_norm_zero_for_perfectly_covered_sequence() {
+        let seq = vec!["A", "B", "C"];
+        let corpus = make_corpus(seq.clone(), 10);
+        let mut spma = Spma::new(10);
+        spma.train(&corpus);
+        let result = spma.infer(&seq);
+        assert!(
+            result.e_norm < 1e-10,
+            "perfectly covered sequence must have e_norm == 0.0, got {}",
+            result.e_norm
+        );
     }
 }
