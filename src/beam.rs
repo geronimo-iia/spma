@@ -84,8 +84,9 @@ impl PartialAlignment {
                     old_pos >= prev_old
                 }
             }
-            // First symbol of this Old pattern: enforce inter-pattern ordering.
-            None => new_pos >= self.max_covered_new,
+            // First symbol of this Old pattern: must start at old_pos==0 and
+            // respect inter-pattern ordering (left-to-right in New).
+            None => old_pos == 0 && new_pos >= self.max_covered_new,
         }
     }
 
@@ -103,7 +104,8 @@ impl PartialAlignment {
         let t = g + e;
         let cd = raw_new_cost - t;
 
-        let old_pattern_indices: Vec<usize> = self.old_cursors.keys().copied().collect();
+        let mut old_pattern_indices: Vec<usize> = self.old_cursors.keys().copied().collect();
+        old_pattern_indices.sort_unstable();
 
         // Determine alignment type
         let new_fully_covered = self.covered_new.iter().all(|&c| c);
@@ -205,7 +207,7 @@ pub fn beam_search(
             }
         }
 
-        // Prune to beam_k: sort by CD descending, break ties by coverage count descending
+        // Prune to beam_k: sort by CD descending, break ties by coverage count, then lexicographically
         next_candidates.sort_by(|a, b| {
             b.cd.partial_cmp(&a.cd)
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -214,6 +216,7 @@ pub fn beam_search(
                     let b_cov = b.covered_new.iter().filter(|&&c| c).count();
                     b_cov.cmp(&a_cov)
                 })
+                .then_with(|| a.covered_new.cmp(&b.covered_new))
         });
         next_candidates.truncate(beam_k);
         candidates = next_candidates;
@@ -224,7 +227,11 @@ pub fn beam_search(
         .into_iter()
         .map(|c| c.finalize(new, old, costs))
         .collect();
-    results.sort_by(|a, b| b.cd.partial_cmp(&a.cd).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.cd.partial_cmp(&a.cd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.old_pattern_indices.cmp(&b.old_pattern_indices))
+    });
     results
 }
 

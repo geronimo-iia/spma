@@ -3,7 +3,7 @@
 
 use crate::*;
 use anyhow::{Context, Result};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
 use std::fs;
 
@@ -341,7 +341,7 @@ impl SpmaEngine {
 
             // Pass 1: collect candidate patterns from beam alignments (count occurrences)
             let new_patterns_snapshot = self.new_patterns.clone();
-            let mut candidates: HashMap<Vec<u32>, u32> = HashMap::new();
+            let mut candidates: BTreeMap<Vec<u32>, u32> = BTreeMap::new();
             for new_pattern in &new_patterns_snapshot {
                 let best_opt = self.run_recognition_cycle_beam(new_pattern);
 
@@ -597,7 +597,7 @@ impl SpmaEngine {
     /// Uses MDL criterion: only include a pattern if it reduces global encoding cost.
     /// Returns true if any new n-gram patterns were added.
     fn extract_frequent_ngrams(&mut self, patterns: &[Pattern], min_freq: u32) -> bool {
-        let mut ngram_counts: HashMap<Vec<u32>, u32> = HashMap::new();
+        let mut ngram_counts: BTreeMap<Vec<u32>, u32> = BTreeMap::new();
 
         for pat in patterns {
             let ids: Vec<u32> = pat.symbols.iter().map(|s| s.raw_id()).collect();
@@ -701,7 +701,7 @@ impl SpmaEngine {
     }
 
     fn extract_frequent_ngrams_ids(&mut self, patterns: &[Pattern], min_freq: u32) -> bool {
-        let mut ngram_counts: HashMap<Vec<u32>, u32> = HashMap::new();
+        let mut ngram_counts: BTreeMap<Vec<u32>, u32> = BTreeMap::new();
         for pat in patterns {
             let ids: Vec<u32> = pat.symbols.iter().map(|s| s.raw_id()).collect();
             if ids.len() >= 2 {
@@ -812,7 +812,7 @@ impl SpmaEngine {
             let old_count_before = self.old_patterns.len();
 
             let new_patterns_snapshot = self.new_patterns.clone();
-            let mut candidates: HashMap<Vec<u32>, u32> = HashMap::new();
+            let mut candidates: BTreeMap<Vec<u32>, u32> = BTreeMap::new();
             for new_pattern in &new_patterns_snapshot {
                 let best_opt = self.run_recognition_cycle_beam(new_pattern);
                 if let Some(best) = best_opt {
