@@ -235,6 +235,7 @@ impl Spma {
                         &best.covered,
                         &mut next_id,
                         self.max_induced_gap,
+                        level as u8,
                     );
                     gap_candidates.extend(new_gaps);
 
@@ -693,6 +694,10 @@ fn build_next_level_patterns(
 
     ngrams
         .into_iter()
+        .filter(|(ngram, _)| {
+            // Drop gap-encoded candidates — pid sequences don't support gap induction
+            !ngram.contains(&GAP_MARKER)
+        })
         .map(|(ngram, freq)| {
             let symbols: Vec<SymbolRef> =
                 ngram.iter().map(|&id| SymbolRef::Pattern(id)).collect();
@@ -751,6 +756,7 @@ fn extract_learned_patterns(
     covered: &[bool],
     next_id: &mut u32,
     max_gap: usize,
+    target_level: u8,
 ) -> Vec<Pattern> {
     let spans = contiguous_spans(covered);
     if spans.is_empty() {
@@ -772,7 +778,7 @@ fn extract_learned_patterns(
             let symbols: Vec<SymbolRef> = (start..end)
                 .map(|i| pattern.symbols[i])
                 .collect();
-            let pat = Pattern::new_contiguous(*next_id, symbols, pattern.level);
+            let pat = Pattern::new_contiguous(*next_id, symbols, target_level);
             *next_id += 1;
             result.push(pat);
         } else {
@@ -839,7 +845,7 @@ fn extract_learned_patterns(
             let _ = sym_idx;
 
             debug_assert_eq!(gaps.len(), symbols.len() - 1);
-            let pat = Pattern::new_with_gaps(*next_id, symbols, gaps, pattern.level);
+            let pat = Pattern::new_with_gaps(*next_id, symbols, gaps, target_level);
             *next_id += 1;
             result.push(pat);
         }
@@ -1042,7 +1048,7 @@ mod tests {
         let pat = Pattern::new_contiguous(0, symbols, 0);
         let covered = vec![true, true, false, false, true, true];
         let mut next_id = 1u32;
-        let result = extract_learned_patterns(&pat, &covered, &mut next_id, 3);
+        let result = extract_learned_patterns(&pat, &covered, &mut next_id, 3, 0);
         assert_eq!(result.len(), 1, "should produce one gap pattern");
         assert_eq!(result[0].symbols.len(), 4, "symbols: sym0,sym1,sym4,sym5");
         assert!(!result[0].gaps.is_empty(), "must have gap constraints");
@@ -1060,7 +1066,7 @@ mod tests {
         let pat = Pattern::new_contiguous(0, symbols, 0);
         let covered = vec![true, true, false, false, false, false, true, true];
         let mut next_id = 1u32;
-        let result = extract_learned_patterns(&pat, &covered, &mut next_id, 3);
+        let result = extract_learned_patterns(&pat, &covered, &mut next_id, 3, 0);
         assert_eq!(result.len(), 2, "gap too wide: must produce two separate patterns");
         assert!(result[0].gaps.is_empty(), "first pattern must be contiguous");
         assert!(result[1].gaps.is_empty(), "second pattern must be contiguous");
