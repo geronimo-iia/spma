@@ -24,7 +24,7 @@ pub struct InferResult {
 pub struct Spma {
     pub grammar: Grammar,
     beam_k: usize,
-    atom_costs: Vec<f64>,
+    pub atom_costs: Vec<f64>,
     max_induced_gap: usize,
 }
 
