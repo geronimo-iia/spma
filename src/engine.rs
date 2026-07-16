@@ -10,7 +10,7 @@ use std::fs;
 fn collect_frequencies(freqs: &mut HashMap<u32, u32>, patterns: &[Pattern]) {
     for pattern in patterns {
         for symbol in &pattern.symbols {
-            *freqs.entry(symbol.name).or_insert(0) += pattern.frequency;
+            *freqs.entry(symbol.raw_id()).or_insert(0) += pattern.frequency;
         }
     }
 }
@@ -19,7 +19,7 @@ fn apply_symbol_costs(freqs: &HashMap<u32, u32>, patterns: &mut [Pattern]) {
     let total_freq: u32 = freqs.values().sum();
     for pattern in patterns {
         for symbol in &mut pattern.symbols {
-            if let Some(&freq) = freqs.get(&symbol.name) {
+            if let Some(&freq) = freqs.get(&symbol.raw_id()) {
                 if freq > 0 && total_freq > 0 {
                     let probability = freq as f64 / total_freq as f64;
                     symbol.bit_cost = -probability.log2();
@@ -257,7 +257,7 @@ impl SpmaEngine {
         for pattern in self.old_patterns.iter().chain(self.new_patterns.iter()) {
             for symbol in &pattern.symbols {
                 if symbol.status == SymbolStatus::Identification {
-                    context_symbols.insert(symbol.name);
+                    context_symbols.insert(symbol.raw_id());
                 }
             }
         }
@@ -268,7 +268,7 @@ impl SpmaEngine {
             .chain(self.new_patterns.iter_mut())
         {
             for symbol in &mut pattern.symbols {
-                if context_symbols.contains(&symbol.name) {
+                if context_symbols.contains(&symbol.raw_id()) {
                     symbol.symbol_type = SymbolType::ContextSymbol;
                 }
             }
@@ -289,22 +289,22 @@ impl SpmaEngine {
         let mut costs = vec![0.0f64; max_id];
         for p in &self.old_patterns {
             for s in &p.symbols {
-                if (s.name as usize) < costs.len() {
-                    costs[s.name as usize] = s.bit_cost;
+                if (s.raw_id() as usize) < costs.len() {
+                    costs[s.raw_id() as usize] = s.bit_cost;
                 }
             }
         }
         for s in &new_pattern.symbols {
-            if (s.name as usize) < costs.len() {
-                costs[s.name as usize] = s.bit_cost;
+            if (s.raw_id() as usize) < costs.len() {
+                costs[s.raw_id() as usize] = s.bit_cost;
             }
         }
 
-        let new_ids: Vec<u32> = new_pattern.symbols.iter().map(|s| s.name).collect();
+        let new_ids: Vec<u32> = new_pattern.symbols.iter().map(|s| s.raw_id()).collect();
         let old_id_vecs: Vec<Vec<u32>> = self
             .old_patterns
             .iter()
-            .map(|p| p.symbols.iter().map(|s| s.name).collect())
+            .map(|p| p.symbols.iter().map(|s| s.raw_id()).collect())
             .collect();
 
         let alignments = beam_search(&new_ids, &old_id_vecs, self.keep_rows as usize, &costs);
@@ -349,7 +349,7 @@ impl SpmaEngine {
                             &mut self.next_pattern_id,
                         ) {
                             let learned_ids: Vec<u32> =
-                                learned.symbols.iter().map(|s| s.name).collect();
+                                learned.symbols.iter().map(|s| s.raw_id()).collect();
                             *candidates.entry(learned_ids).or_insert(0) += 1;
                         }
                     }
@@ -362,15 +362,15 @@ impl SpmaEngine {
                 let mut costs = vec![0.0f64; max_id];
                 for p in self.old_patterns.iter().chain(self.new_patterns.iter()) {
                     for s in &p.symbols {
-                        if (s.name as usize) < max_id {
-                            costs[s.name as usize] = s.bit_cost;
+                        if (s.raw_id() as usize) < max_id {
+                            costs[s.raw_id() as usize] = s.bit_cost;
                         }
                     }
                 }
                 let new_id_vecs: Vec<Vec<u32>> = self
                     .new_patterns
                     .iter()
-                    .map(|p| p.symbols.iter().map(|s| s.name).collect())
+                    .map(|p| p.symbols.iter().map(|s| s.raw_id()).collect())
                     .collect();
 
                 let mut sorted_candidates: Vec<(Vec<u32>, u32)> = candidates.into_iter().collect();
@@ -388,7 +388,7 @@ impl SpmaEngine {
                     .old_patterns
                     .iter()
                     .filter(|p| p.symbols.len() >= 2)
-                    .map(|p| p.symbols.iter().map(|s| s.name).collect())
+                    .map(|p| p.symbols.iter().map(|s| s.raw_id()).collect())
                     .collect();
                 let mut current_g: f64 = current_multi
                     .iter()
@@ -495,8 +495,8 @@ impl SpmaEngine {
         self.corpus_costs = vec![0.0f64; max_id];
         for p in &self.new_patterns {
             for s in &p.symbols {
-                if (s.name as usize) < max_id && s.bit_cost > 0.0 {
-                    self.corpus_costs[s.name as usize] = s.bit_cost;
+                if (s.raw_id() as usize) < max_id && s.bit_cost > 0.0 {
+                    self.corpus_costs[s.raw_id() as usize] = s.bit_cost;
                 }
             }
         }
@@ -525,7 +525,7 @@ impl SpmaEngine {
 
         // Count bigrams and trigrams
         for pat in patterns {
-            let ids: Vec<u32> = pat.symbols.iter().map(|s| s.name).collect();
+            let ids: Vec<u32> = pat.symbols.iter().map(|s| s.raw_id()).collect();
             for n in 2..=3 {
                 if ids.len() >= n {
                     for window in ids.windows(n) {
@@ -540,8 +540,8 @@ impl SpmaEngine {
         let mut costs = vec![0.0f64; max_id];
         for p in self.old_patterns.iter().chain(self.new_patterns.iter()) {
             for s in &p.symbols {
-                if (s.name as usize) < max_id {
-                    costs[s.name as usize] = s.bit_cost;
+                if (s.raw_id() as usize) < max_id {
+                    costs[s.raw_id() as usize] = s.bit_cost;
                 }
             }
         }
@@ -564,13 +564,13 @@ impl SpmaEngine {
         let new_id_vecs: Vec<Vec<u32>> = self
             .new_patterns
             .iter()
-            .map(|p| p.symbols.iter().map(|s| s.name).collect())
+            .map(|p| p.symbols.iter().map(|s| s.raw_id()).collect())
             .collect();
 
         let mut added = false;
         for (ngram, count) in &candidates {
             let is_dup = self.old_patterns.iter().any(|p| {
-                let p_syms: Vec<u32> = p.symbols.iter().map(|s| s.name).collect();
+                let p_syms: Vec<u32> = p.symbols.iter().map(|s| s.raw_id()).collect();
                 p_syms == *ngram
             });
             if is_dup || *count < min_freq {
@@ -582,14 +582,14 @@ impl SpmaEngine {
                 .old_patterns
                 .iter()
                 .filter(|p| p.symbols.len() >= 2)
-                .map(|p| p.symbols.iter().map(|s| s.name).collect())
+                .map(|p| p.symbols.iter().map(|s| s.raw_id()).collect())
                 .collect();
             let current_g: f64 = self
                 .old_patterns
                 .iter()
                 .filter(|p| p.symbols.len() >= 2)
                 .flat_map(|p| p.symbols.iter())
-                .map(|s| costs[s.name as usize])
+                .map(|s| costs[s.raw_id() as usize])
                 .sum();
             let current_e = compute_total_e_dp(&new_id_vecs, &current_multi, &costs);
             let current_t = current_g + current_e;
@@ -638,8 +638,8 @@ impl SpmaEngine {
         let mut costs = vec![0.0f64; max_id];
         for p in old_patterns.iter().chain(new_patterns.iter()) {
             for s in &p.symbols {
-                if (s.name as usize) < max_id {
-                    costs[s.name as usize] = s.bit_cost;
+                if (s.raw_id() as usize) < max_id {
+                    costs[s.raw_id() as usize] = s.bit_cost;
                 }
             }
         }
@@ -650,21 +650,21 @@ impl SpmaEngine {
             .iter()
             .filter(|p| p.symbols.len() >= 2)
             .flat_map(|p| p.symbols.iter())
-            .map(|s| costs[s.name as usize])
+            .map(|s| costs[s.raw_id() as usize])
             .sum();
 
         // Collect multi-symbol grammar patterns as ID sequences
         let multi_id_vecs: Vec<Vec<u32>> = old_patterns
             .iter()
             .filter(|p| p.symbols.len() >= 2)
-            .map(|p| p.symbols.iter().map(|s| s.name).collect())
+            .map(|p| p.symbols.iter().map(|s| s.raw_id()).collect())
             .collect();
 
         let mut total_e = 0.0f64;
         let mut total_raw = 0.0f64;
 
         for new_pat in new_patterns {
-            let new_ids: Vec<u32> = new_pat.symbols.iter().map(|s| s.name).collect();
+            let new_ids: Vec<u32> = new_pat.symbols.iter().map(|s| s.raw_id()).collect();
             let raw_cost: f64 = new_ids.iter().map(|&id| costs[id as usize]).sum();
             total_raw += raw_cost;
 
@@ -786,7 +786,7 @@ mod tests {
         let mut id = 10u32;
         let spans = extract_learned_patterns(&p, &[true, true, true], &mut id);
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].symbols.iter().map(|s| s.name).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(spans[0].symbols.iter().map(|s| s.raw_id()).collect::<Vec<_>>(), vec![0, 1, 2]);
         assert_eq!(id, 11);
     }
 
@@ -797,8 +797,8 @@ mod tests {
         let mut id = 1u32;
         let spans = extract_learned_patterns(&p, &[true, true, false, true, true], &mut id);
         assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].symbols.iter().map(|s| s.name).collect::<Vec<_>>(), vec![0, 1]);
-        assert_eq!(spans[1].symbols.iter().map(|s| s.name).collect::<Vec<_>>(), vec![3, 4]);
+        assert_eq!(spans[0].symbols.iter().map(|s| s.raw_id()).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(spans[1].symbols.iter().map(|s| s.raw_id()).collect::<Vec<_>>(), vec![3, 4]);
         assert_eq!(id, 3);
     }
 
@@ -828,7 +828,7 @@ mod tests {
         let mut id = 7u32;
         let spans = extract_learned_patterns(&p, &[false, true, true, true, false], &mut id);
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].symbols.iter().map(|s| s.name).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(spans[0].symbols.iter().map(|s| s.raw_id()).collect::<Vec<_>>(), vec![1, 2, 3]);
         assert_eq!(id, 8);
     }
 }

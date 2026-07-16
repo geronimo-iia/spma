@@ -9,7 +9,7 @@ fn make_interner_and_symbol(name: &str) -> (Interner, Symbol) {
 #[test]
 fn test_symbol_creation() {
     let (interner, symbol) = make_interner_and_symbol("test");
-    assert_eq!(interner.name(symbol.name), "test");
+    assert_eq!(interner.name(symbol.raw_id()), "test");
     assert_eq!(symbol.symbol_type, SymbolType::DataSymbol);
     assert_eq!(symbol.status, SymbolStatus::Contents);
     assert_eq!(symbol.frequency, 1);
@@ -108,14 +108,14 @@ fn assign_symbol_types_promotes_identification_symbols() {
     sp.new_patterns = vec![Pattern::new(vec![sym_a, sym_b], 1)];
     sp.assign_symbol_types();
 
-    let b_in_pat = sp.new_patterns[0].symbols.iter().find(|s| s.name == b).unwrap();
+    let b_in_pat = sp.new_patterns[0].symbols.iter().find(|s| s.raw_id() == b).unwrap();
     assert_eq!(
         b_in_pat.symbol_type,
         SymbolType::ContextSymbol,
         "Identification symbol should be promoted to ContextSymbol"
     );
 
-    let a_in_pat = sp.new_patterns[0].symbols.iter().find(|s| s.name == a).unwrap();
+    let a_in_pat = sp.new_patterns[0].symbols.iter().find(|s| s.raw_id() == a).unwrap();
     assert_eq!(
         a_in_pat.symbol_type,
         SymbolType::DataSymbol,
@@ -205,7 +205,7 @@ fn test_v1_shannon_bit_costs() {
         patterns
             .iter()
             .flat_map(|p| p.symbols.iter())
-            .find(|s| s.name == id)
+            .find(|s| s.raw_id() == id)
             .expect("symbol not found in patterns")
             .bit_cost
     };

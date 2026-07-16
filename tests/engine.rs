@@ -117,7 +117,7 @@ fn test_v5_one_trial_learning_with_repetition() {
     let fault_b_id = sp.interner.intern("fault_B");
 
     let has_ab = results.final_patterns.iter().any(|p| {
-        let ids: Vec<u32> = p.symbols.iter().map(|s| s.name).collect();
+        let ids: Vec<u32> = p.symbols.iter().map(|s| s.raw_id()).collect();
         ids.contains(&fault_a_id) && ids.contains(&fault_b_id)
     });
     assert!(has_ab, "repeated bigram fault_A fault_B should be in grammar");
@@ -209,7 +209,7 @@ fn extract_frequent_ngrams_cold_start_adds_bigrams() {
     let a = sp.interner.intern("a");
     let b = sp.interner.intern("b");
     let has_ab = results.final_patterns.iter().any(|p| {
-        let ids: Vec<u32> = p.symbols.iter().map(|s| s.name).collect();
+        let ids: Vec<u32> = p.symbols.iter().map(|s| s.raw_id()).collect();
         ids == vec![a, b]
     });
     assert!(has_ab, "cold-start should extract bigram [a,b]");

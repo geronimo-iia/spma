@@ -28,9 +28,15 @@ pub enum AlignmentType {
     Partial, // Partial matching
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SymbolRef {
+    Atom(u32),
+    Pattern(u32),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Symbol {
-    pub name: u32,
+    pub name: SymbolRef,
     pub symbol_type: SymbolType,
     pub status: SymbolStatus,
     pub frequency: u32,
@@ -41,12 +47,44 @@ pub struct Symbol {
 impl Symbol {
     pub fn new(name: u32) -> Self {
         Self {
-            name,
+            name: SymbolRef::Atom(name),
             symbol_type: SymbolType::DataSymbol,
             status: SymbolStatus::Contents,
             frequency: 1,
             bit_cost: 0.0,
             position: -1,
+        }
+    }
+
+    pub fn new_pattern_ref(pattern_id: u32) -> Self {
+        Self {
+            name: SymbolRef::Pattern(pattern_id),
+            symbol_type: SymbolType::DataSymbol,
+            status: SymbolStatus::Contents,
+            frequency: 1,
+            bit_cost: 0.0,
+            position: -1,
+        }
+    }
+
+    pub fn atom_id(&self) -> Option<u32> {
+        match self.name {
+            SymbolRef::Atom(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    pub fn pattern_id(&self) -> Option<u32> {
+        match self.name {
+            SymbolRef::Pattern(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Returns the inner u32 regardless of variant. Used for cost-table indexing.
+    pub fn raw_id(&self) -> u32 {
+        match self.name {
+            SymbolRef::Atom(id) | SymbolRef::Pattern(id) => id,
         }
     }
 
@@ -70,7 +108,10 @@ impl PartialEq for Symbol {
 impl Eq for Symbol {}
 
 pub fn format_symbol(sym: &Symbol, interner: &Interner) -> String {
-    interner.name(sym.name).to_owned()
+    match sym.name {
+        SymbolRef::Atom(id) => interner.name(id).to_owned(),
+        SymbolRef::Pattern(pid) => format!("[pat:{}]", pid),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,7 +155,10 @@ impl Pattern {
     pub fn get_symbol_names(&self, interner: &Interner) -> Vec<String> {
         self.symbols
             .iter()
-            .map(|s| interner.name(s.name).to_owned())
+            .map(|s| match s.name {
+                SymbolRef::Atom(id) => interner.name(id).to_owned(),
+                SymbolRef::Pattern(pid) => format!("[pat:{}]", pid),
+            })
             .collect()
     }
 

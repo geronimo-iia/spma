@@ -191,8 +191,8 @@ impl Spma {
         let mut costs = vec![0.0f64; max_id];
         for p in &self.inner.old_patterns {
             for s in &p.symbols {
-                if (s.name as usize) < max_id {
-                    costs[s.name as usize] = s.bit_cost;
+                if (s.raw_id() as usize) < max_id {
+                    costs[s.raw_id() as usize] = s.bit_cost;
                 }
             }
         }
@@ -208,7 +208,7 @@ impl Spma {
             .inner
             .old_patterns
             .iter()
-            .map(|p| p.symbols.iter().map(|s| s.name).collect())
+            .map(|p| p.symbols.iter().map(|s| s.raw_id()).collect())
             .collect();
 
         let best_opt = beam_search(&ids, &old_id_vecs, self.inner.keep_rows as usize, &costs)
