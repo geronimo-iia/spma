@@ -267,15 +267,81 @@ impl Spma {
             .iter()
             .filter_map(|seq| {
                 let (e_cost, raw) = self.infer_internal(seq);
-                if raw < 1e-12 {
-                    None
-                } else {
-                    Some(e_cost / raw)
-                }
+                if raw < 1e-12 { None } else { Some(e_cost / raw) }
             })
             .collect();
+
+        // Per-level e_norms: for each level, run beam on that level's pid sequences
+        // collected during training (stored in current_atom_seqs after the loop)
+        let n_levels = self.grammar.levels.len();
+        let mut level_e_norms_vecs: Vec<Vec<f64>> = Vec::with_capacity(n_levels);
+
+        // Level 0: same as global e_norms (atom sequences)
+        level_e_norms_vecs.push(e_norms.clone());
+
+        // Higher levels: rebuild pid seqs from atom_seqs through each level
+        if n_levels > 1 {
+            let mut lvl_seqs: Vec<Vec<u32>> = atom_seqs.clone();
+            let mut lvl_costs: Vec<f64> = self.atom_costs.clone();
+
+            for level in 0..n_levels - 1 {
+                let level_patterns: Vec<&Pattern> =
+                    self.grammar.levels[level].patterns.iter().collect();
+                let mut next_lvl_seqs: Vec<Vec<u32>> = Vec::new();
+
+                for seq in &lvl_seqs {
+                    let results = beam_search(seq, &level_patterns, self.beam_k, &lvl_costs);
+                    let pid_seq: Vec<u32> =
+                        if let Some(best) = results.into_iter().next() {
+                            let mut pid_positions: Vec<(u32, usize)> = Vec::new();
+                            for event in &best.match_log {
+                                if event.old_pos == 0 {
+                                    if let Some(pat) = level_patterns.get(event.old_idx) {
+                                        pid_positions.push((pat.id, event.new_pos));
+                                    }
+                                }
+                            }
+                            pid_positions.sort_by_key(|&(_, pos)| pos);
+                            pid_positions.dedup_by_key(|x| x.1);
+                            pid_positions.into_iter().map(|(pid, _)| pid).collect()
+                        } else {
+                            Vec::new()
+                        };
+                    next_lvl_seqs.push(pid_seq);
+                }
+
+                // Build pid costs for next level
+                let n_pats = self.grammar.levels[level].patterns.len();
+                let pid_cost = if n_pats > 1 { (n_pats as f64).log2() } else { 1.0 };
+                let max_pid = self.grammar.levels[level]
+                    .patterns.iter().map(|p| p.id as usize + 1).max().unwrap_or(1);
+                let next_costs = vec![pid_cost; max_pid];
+
+                // Compute e_norms at next level
+                let next_level_patterns: Vec<&Pattern> =
+                    self.grammar.levels[level + 1].patterns.iter().collect();
+                let lvl_e: Vec<f64> = next_lvl_seqs
+                    .iter()
+                    .filter_map(|seq| {
+                        if seq.is_empty() { return None; }
+                        let raw: f64 = seq.iter()
+                            .map(|&id| next_costs.get(id as usize).copied().unwrap_or(pid_cost))
+                            .sum();
+                        if raw < 1e-12 { return None; }
+                        let results = beam_search(seq, &next_level_patterns, self.beam_k, &next_costs);
+                        let e = results.into_iter().next().map(|r| r.e_cost).unwrap_or(raw);
+                        Some(e / raw)
+                    })
+                    .collect();
+                level_e_norms_vecs.push(lvl_e);
+
+                lvl_seqs = next_lvl_seqs;
+                lvl_costs = next_costs;
+            }
+        }
+
         self.grammar.e_distribution =
-            crate::model::EDistribution::fit(e_norms, 0.0, vec![]);
+            crate::model::EDistribution::fit(e_norms, 0.0, level_e_norms_vecs);
     }
 
     pub fn infer(&self, seq: &[&str]) -> InferResult {
@@ -355,7 +421,7 @@ impl Spma {
         };
 
         let is_anomaly = e_norm > self.grammar.e_distribution.threshold;
-        let anomaly_percentile = self.grammar.e_distribution.anomaly_rank(e_norm);
+        let anomaly_percentile = self.grammar.e_distribution.anomaly_rank(e_norm); // strict < semantics: training seqs score 0.0
 
         let alignment =
             build_alignment(&best_raw, &new_names, &level0_patterns, &self.grammar);
@@ -364,17 +430,9 @@ impl Spma {
         let mut level_costs: Vec<f64> = Vec::new();
         let mut level_e_norms: Vec<f64> = Vec::new();
 
-        // Level 0: use atom ids and atom costs
-        {
-            let results0 = beam_search(&ids, &level0_patterns, self.beam_k, &costs);
-            let lc0 = results0
-                .into_iter()
-                .next()
-                .map(|r| r.e_cost)
-                .unwrap_or(raw_new_cost);
-            level_costs.push(lc0);
-            level_e_norms.push(if raw_new_cost < 1e-12 { 0.0 } else { lc0 / raw_new_cost });
-        }
+        // Level 0: reuse best_raw already computed above
+        level_costs.push(e_cost);
+        level_e_norms.push(if raw_new_cost < 1e-12 { 0.0 } else { e_cost / raw_new_cost });
 
         // Higher levels: use pid sequences derived from match log
         let mut current_seq = ids.clone();
