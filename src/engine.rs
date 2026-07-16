@@ -393,6 +393,7 @@ impl SpmaEngine {
                     save_b
                         .partial_cmp(&save_a)
                         .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.0.cmp(&b.0))
                 });
 
                 let mut current_multi: Vec<Vec<u32>> = self
@@ -859,6 +860,7 @@ impl SpmaEngine {
                     let save_a = (a.1 as f64 - 1.0) * cost_a;
                     let save_b = (b.1 as f64 - 1.0) * cost_b;
                     save_b.partial_cmp(&save_a).unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.0.cmp(&b.0))
                 });
 
                 let mut current_multi: Vec<Vec<u32>> = self
