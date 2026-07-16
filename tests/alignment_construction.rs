@@ -220,3 +220,39 @@ fn rows_sorted_by_level_then_first_new_pos() {
     assert_eq!(alignment.rows[0].pattern_id, 1, "rows[0] must be P1 (level=0)");
     assert_eq!(alignment.rows[1].pattern_id, 0, "rows[1] must be P0 (level=1)");
 }
+
+// Scenario 14 — display_footer_shows_zero_e_cost_for_fully_covered
+#[test]
+fn display_footer_shows_zero_e_cost_for_fully_covered() {
+    let mut spma = spma::Spma::new(10);
+    let c: Vec<Vec<&str>> = vec![vec!["TRIP", "OPEN", "RESTORE"]; 20];
+    spma.train(&c);
+
+    let result = spma.infer(&["TRIP", "OPEN", "RESTORE"]);
+    assert!(
+        result.e_cost < 1e-10,
+        "fully covered sequence: e_cost must be ~0, got {}",
+        result.e_cost
+    );
+
+    let s = format!("{}", result.alignment);
+    assert!(
+        s.contains("E: 0.0 bits") || s.contains("E: -0.0 bits"),
+        "display footer must show zero e_cost, got:\n{}",
+        s
+    );
+}
+
+// Scenario 15 — unmatched_symbols_empty_when_fully_covered
+#[test]
+fn unmatched_symbols_empty_when_fully_covered() {
+    let mut spma = spma::Spma::new(10);
+    let c: Vec<Vec<&str>> = vec![vec!["TRIP", "OPEN", "RESTORE"]; 20];
+    spma.train(&c);
+
+    let result = spma.infer(&["TRIP", "OPEN", "RESTORE"]);
+    assert!(
+        result.alignment.unmatched_symbols().is_empty(),
+        "fully covered sequence must have no unmatched symbols"
+    );
+}
