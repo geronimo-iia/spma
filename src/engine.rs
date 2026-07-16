@@ -599,7 +599,6 @@ impl SpmaEngine {
     fn extract_frequent_ngrams(&mut self, patterns: &[Pattern], min_freq: u32) -> bool {
         let mut ngram_counts: HashMap<Vec<u32>, u32> = HashMap::new();
 
-        // Count bigrams and trigrams
         for pat in patterns {
             let ids: Vec<u32> = pat.symbols.iter().map(|s| s.raw_id()).collect();
             for n in 2..=3 {
@@ -634,6 +633,7 @@ impl SpmaEngine {
             save_b
                 .partial_cmp(&save_a)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
         });
 
         // Greedy MDL selection: add each candidate only if it improves global T
@@ -704,11 +704,9 @@ impl SpmaEngine {
         let mut ngram_counts: HashMap<Vec<u32>, u32> = HashMap::new();
         for pat in patterns {
             let ids: Vec<u32> = pat.symbols.iter().map(|s| s.raw_id()).collect();
-            for n in 2..=3 {
-                if ids.len() >= n {
-                    for window in ids.windows(n) {
-                        *ngram_counts.entry(window.to_vec()).or_insert(0) += 1;
-                    }
+            if ids.len() >= 2 {
+                for window in ids.windows(2) {
+                    *ngram_counts.entry(window.to_vec()).or_insert(0) += 1;
                 }
             }
         }
@@ -734,6 +732,7 @@ impl SpmaEngine {
             let save_a = (a.1 as f64 - 1.0) * cost_a;
             let save_b = (b.1 as f64 - 1.0) * cost_b;
             save_b.partial_cmp(&save_a).unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
         });
 
         let new_id_vecs: Vec<Vec<u32>> = self
