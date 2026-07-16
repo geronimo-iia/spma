@@ -1,14 +1,22 @@
 //! Demonstrates order-sensitive anomaly detection and its current limits.
 //!
-//! When the training corpus is a single repeated sequence, the grammar learns
-//! tight multi-symbol patterns (e.g. [TRIP_A, BREAKER_OPEN, UNDERVOLTAGE]).
-//! A reordered input cannot match these patterns contiguously → E > 0.
+//! SPMA flags a sequence as anomalous when any symbol is uncovered by the
+//! learned grammar (E > 0, threshold = 0.0 by default). With frequency-based
+//! costs, every uncovered atom contributes positively to E — so a "normal"
+//! sequence can still score ANOMALY if the grammar did not induce patterns
+//! that cover every position.
 //!
-//! This works when:
+//! Practical implication: grammar completeness depends on corpus size and
+//! frequency thresholds. Atoms that appear in every training sequence but are
+//! never the shared component of a co-occurring pair will not enter any
+//! pattern and remain uncovered at inference. This is expected behavior, not
+//! a cost model bug.
+//!
+//! Order detection works when:
 //!   - The corpus is homogeneous (one canonical sequence, repeated many times).
-//!   - The grammar therefore learns patterns that span the full sequence.
+//!   - The grammar learns patterns that span the full sequence.
 //!
-//! This does NOT work when:
+//! Order detection weakens when:
 //!   - Multiple sequence variants are in the corpus — grammar learns shorter,
 //!     more flexible patterns that can stitch across reorderings.
 
@@ -18,6 +26,8 @@ fn main() {
     // ── Homogeneous corpus: order detection works ────────────────────────────
 
     println!("=== Homogeneous corpus (single sequence type × 8) ===\n");
+    println!("Note: atoms not covered by any learned pattern score E > 0.");
+    println!("'Normal' may still show ANOMALY if grammar coverage is incomplete.\n");
 
     let mut engine = Spma::new(10);
     engine.train(
@@ -28,19 +38,19 @@ fn main() {
 
     let cases: Vec<(&str, Vec<&str>)> = vec![
         (
-            "Normal",
+            "Normal (E>0 if any atom uncovered by grammar)",
             vec!["TRIP_A", "BREAKER_OPEN", "UNDERVOLTAGE", "BACKUP_RELAY"],
         ),
         (
-            "Reordered — detected (grammar spans full sequence)",
+            "Reordered — higher E (grammar spans sequence, reorder breaks patterns)",
             vec!["BACKUP_RELAY", "UNDERVOLTAGE", "BREAKER_OPEN", "TRIP_A"],
         ),
         (
-            "Unknown symbol — detected",
+            "Unknown symbol — highest E (unknown atom costs max bits)",
             vec!["TRIP_A", "BREAKER_OPEN", "GROUNDFAULT", "BACKUP_RELAY"],
         ),
         (
-            "Missing symbol — NOT detected (remaining symbols still covered)",
+            "Missing symbol — E changes only if removed atom was covered",
             vec!["TRIP_A", "BREAKER_OPEN", "BACKUP_RELAY"],
         ),
     ];
@@ -58,7 +68,7 @@ fn main() {
     // ── Varied corpus: order detection breaks down ───────────────────────────
 
     println!("\n=== Varied corpus (4 variants × 8) ===\n");
-    println!("Grammar learns shorter patterns that stitch across reorderings.\n");
+    println!("Grammar learns shorter patterns; reordered sequences may partially match.\n");
 
     let mut engine2 = Spma::new(10);
     engine2.train(
@@ -76,11 +86,11 @@ fn main() {
 
     let cases2: Vec<(&str, Vec<&str>)> = vec![
         (
-            "Normal",
+            "Normal (atoms not in patterns still uncovered → E > 0 possible)",
             vec!["TRIP_A", "BREAKER_OPEN", "UNDERVOLTAGE", "BACKUP_RELAY"],
         ),
         (
-            "Reordered — partially detected (multi-pattern stitching reduces E)",
+            "Reordered — partially detected (multi-pattern stitching reduces E vs homogeneous)",
             vec!["BACKUP_RELAY", "UNDERVOLTAGE", "BREAKER_OPEN", "TRIP_A"],
         ),
         (
@@ -100,7 +110,9 @@ fn main() {
     }
 
     println!("\nSummary:");
-    println!("  - Unknown symbols:  always detected");
-    println!("  - Order violations: detected with homogeneous corpus; weaker with varied");
-    println!("  - Missing symbols:  not detected (remaining symbols still covered)");
+    println!("  - Unknown symbols:     always detected (high atom cost)");
+    println!("  - Order violations:    detected with homogeneous corpus; weaker with varied");
+    println!("  - Missing symbols:     detected only if removed atom was grammar-covered");
+    println!("  - Grammar completeness: atoms never in a learned pattern stay uncovered");
+    println!("    → training sequences can score E > 0 if corpus is too small or varied");
 }
