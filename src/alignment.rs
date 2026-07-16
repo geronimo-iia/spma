@@ -59,7 +59,7 @@ pub fn build_alignment(
     raw: &RawAlignment,
     new_names: &[&str],
     old_patterns: &[&Pattern],
-    grammar: &Grammar,
+    _grammar: &Grammar,
 ) -> Alignment {
     // Step 1: sort by (old_idx, new_pos)
     let mut sorted_log = raw.match_log.clone();
@@ -136,15 +136,7 @@ pub fn build_alignment(
         let non_gap_count = cells.iter().filter(|c| !c.is_gap).count();
         let fully_matched = non_gap_count == pat.symbols.len();
 
-        let pattern_label: String = pat
-            .symbols
-            .iter()
-            .map(|s| match s {
-                SymbolRef::Atom(id) => grammar.interner.name(*id).to_string(),
-                SymbolRef::Pattern(id) => format!("P{id}"),
-            })
-            .collect::<Vec<_>>()
-            .join("-");
+        let pattern_label = format!("P{}", pat.id);
 
         rows.push(AlignmentRow {
             pattern_id: pat.id,
