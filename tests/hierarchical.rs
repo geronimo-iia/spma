@@ -29,12 +29,14 @@ fn l2_grammar_forms_after_repeated_ordered_corpus() {
 #[test]
 fn l2_correct_order_zero_level_cost() {
     let eng = train_abc_def_x10();
-    if eng.grammar_depth() < 2 {
-        return;
-    }
+    assert!(
+        eng.grammar_depth() >= 2,
+        "corpus must produce depth >= 2, got {}",
+        eng.grammar_depth()
+    );
     let result = eng.infer(&["A", "B", "C", "D", "E", "F"]).unwrap();
     assert!(
-        result.level_costs.is_empty() || result.level_costs[0] == 0.0,
+        !result.level_costs.is_empty() && result.level_costs[0] == 0.0,
         "correct order should have level_costs[0] == 0.0, got {:?}",
         result.level_costs
     );
@@ -43,9 +45,11 @@ fn l2_correct_order_zero_level_cost() {
 #[test]
 fn l2_reversed_order_nonzero_level_cost() {
     let eng = train_abc_def_x10();
-    if eng.grammar_depth() < 2 {
-        return;
-    }
+    assert!(
+        eng.grammar_depth() >= 2,
+        "corpus must produce depth >= 2, got {}",
+        eng.grammar_depth()
+    );
     // Reversed: DEF before ABC — unseen ordering
     let result = eng.infer(&["D", "E", "F", "A", "B", "C"]).unwrap();
     assert!(result.is_anomaly, "reversed order must be anomalous");
@@ -103,15 +107,16 @@ fn l2_all_unknown_sequence_does_not_fire_l2() {
     let result = eng.infer(&["X", "Y", "Z", "W", "V", "U"]).unwrap();
     assert!(result.e_cost > 0.0, "unknown sequence must have E > 0");
     assert!(
-        result.level_costs.is_empty() || result.level_costs.iter().all(|&c| c == 0.0),
-        "all-unknown: level-2 must not fire or contribute zero cost"
+        result.level_costs.is_empty(),
+        "all-unknown: no level-2 patterns matched, level_costs must be empty, got {:?}",
+        result.level_costs
     );
 }
 
 #[test]
-fn l3_grammar_forms_on_episode_corpus() {
+fn l2_grammar_forms_on_episode_corpus() {
     let mut eng = Spma::new();
-    // 8-atom sequence — miner produces two trigrams, enabling level-2.
+    // 8-atom sequence — miner produces two non-overlapping trigrams, enabling level-2.
     let corpus: Vec<Vec<&str>> = (0..10)
         .map(|_| vec!["A", "B", "C", "D", "E", "F", "G", "H"])
         .collect();
@@ -176,13 +181,21 @@ fn e_cost_equals_sum_of_level_costs() {
     let eng = train_abc_def_x10();
     let result = eng.infer(&["D", "E", "F", "A", "B", "C"]).unwrap();
     let level_sum: f64 = result.level_costs.iter().sum();
-    let e_cost_l0 = result.e_cost - level_sum;
-    let expected = e_cost_l0 + level_sum;
+    // e_cost = level-0 cost + sum of higher-level costs.
+    // level_sum must be <= e_cost (higher levels don't exceed total encoding cost).
     assert!(
-        (result.e_cost - expected).abs() < 1e-9,
-        "e_cost ({}) must equal e_cost_l0 ({}) + level_sum ({})",
-        result.e_cost,
-        e_cost_l0,
-        level_sum
+        level_sum <= result.e_cost + 1e-9,
+        "level_sum ({}) must not exceed e_cost ({})",
+        level_sum,
+        result.e_cost
     );
+    // level-0 residual must be non-negative.
+    let e_cost_l0 = result.e_cost - level_sum;
+    assert!(
+        e_cost_l0 >= -1e-9,
+        "e_cost_l0 ({}) must be non-negative",
+        e_cost_l0
+    );
+    // Anomalous sequence must have e_cost > 0.
+    assert!(result.e_cost > 0.0, "reversed order must have e_cost > 0");
 }
