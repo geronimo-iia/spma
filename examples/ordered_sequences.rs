@@ -8,24 +8,24 @@
 //! Note: atoms not covered by any learned pattern score E > 0.
 //! 'Normal' may still show ANOMALY if grammar coverage is incomplete.
 //!
-//! [ANOMALY]  E=2.000  CD=+6.000  — Normal (E>0 if any atom uncovered by grammar)
+//! [ANOMALY]  e_norm=0.250  E=2.000  CD=+6.000  — Normal (E>0 if any atom uncovered by grammar)
 //!          unmatched: BACKUP_RELAY
-//! [ANOMALY]  E=6.000  CD=+2.000  — Reordered — higher E (grammar spans sequence, reorder breaks patterns)
+//! [ANOMALY]  e_norm=0.750  E=6.000  CD=+2.000  — Reordered — higher E (grammar spans sequence, reorder breaks patterns)
 //!          unmatched: BACKUP_RELAY, UNDERVOLTAGE, BREAKER_OPEN
-//! [ANOMALY]  E=4.000  CD=+4.000  — Unknown symbol — highest E (unknown atom costs max bits)
+//! [ANOMALY]  e_norm=0.500  E=4.000  CD=+4.000  — Unknown symbol — highest E (unknown atom costs max bits)
 //!          unmatched: GROUNDFAULT, BACKUP_RELAY
-//! [ANOMALY]  E=2.000  CD=+4.000  — Missing symbol — E changes only if removed atom was covered
+//! [ANOMALY]  e_norm=0.333  E=2.000  CD=+4.000  — Missing symbol — E changes only if removed atom was covered
 //!          unmatched: BACKUP_RELAY
 //!
 //! === Varied corpus (4 variants × 8) ===
 //!
 //! Grammar learns shorter patterns; reordered sequences may partially match.
 //!
-//! [ANOMALY]  E=3.000  CD=+7.000  — Normal (atoms not in patterns still uncovered → E > 0 possible)
+//! [ANOMALY]  e_norm=0.300  E=3.000  CD=+7.000  — Normal (atoms not in patterns still uncovered → E > 0 possible)
 //!          unmatched: TRIP_A
-//! [ANOMALY]  E=8.000  CD=+2.000  — Reordered — partially detected (multi-pattern stitching reduces E vs homogeneous)
+//! [ANOMALY]  e_norm=0.800  E=8.000  CD=+2.000  — Reordered — partially detected (multi-pattern stitching reduces E vs homogeneous)
 //!          unmatched: BACKUP_RELAY, UNDERVOLTAGE, TRIP_A
-//! [ANOMALY]  E=6.000  CD=+4.000  — Unknown symbol — detected
+//! [ANOMALY]  e_norm=0.600  E=6.000  CD=+4.000  — Unknown symbol — detected
 //!          unmatched: TRIP_A, GROUNDFAULT
 //! ```
 //!
@@ -87,7 +87,7 @@ fn main() {
     for (label, seq) in &cases {
         let r = engine.infer(seq);
         let tag = if r.is_anomaly { "ANOMALY" } else { "OK     " };
-        println!("[{tag}]  E={:.3}  CD={:+.3}  — {label}", r.e_cost, r.cd);
+        println!("[{tag}]  e_norm={:.3}  E={:.3}  CD={:+.3}  — {label}", r.e_norm, r.e_cost, r.cd);
         let unmatched = r.alignment.unmatched_symbols();
         if !unmatched.is_empty() {
             println!("         unmatched: {}", unmatched.join(", "));
@@ -131,7 +131,7 @@ fn main() {
     for (label, seq) in &cases2 {
         let r = engine2.infer(seq);
         let tag = if r.is_anomaly { "ANOMALY" } else { "OK     " };
-        println!("[{tag}]  E={:.3}  CD={:+.3}  — {label}", r.e_cost, r.cd);
+        println!("[{tag}]  e_norm={:.3}  E={:.3}  CD={:+.3}  — {label}", r.e_norm, r.e_cost, r.cd);
         let unmatched = r.alignment.unmatched_symbols();
         if !unmatched.is_empty() {
             println!("         unmatched: {}", unmatched.join(", "));

@@ -11,8 +11,10 @@ cargo run --example ordered_sequences
 
 | File | What it shows |
 |---|---|
-| `fault_detection.rs` | Varied corpus, gap patterns, anomaly scoring |
+| `fault_detection.rs` | Train, infer, read alignment table — golden path |
 | `ordered_sequences.rs` | Order sensitivity, grammar coverage limits |
+| `save_load.rs` | Save trained model to disk, reload, verify identical results |
+| `threshold_tuning.rs` | Inspect training E_norm distribution, set threshold via quantile |
 
 ## Reading the output
 
@@ -21,19 +23,17 @@ Each inferred sequence prints a score line followed by an alignment table.
 ### Score line
 
 ```
-[ANOMALY]  E=3.415  CD=+7.000  — label
+[ANOMALY]  e_norm=0.333  E=3.415  CD=+7.000  — label
 ```
 
 | Field | Meaning |
 |---|---|
-| `E` | Error cost (bits). Bits spent on uncovered symbols. `E=0` → perfect grammar coverage. |
+| `e_norm` | `E / raw_cost`. Range [0.0, 1.0]. **Anomaly gate**: `is_anomaly = e_norm > threshold` (default 0.0). |
+| `E` | Encoding cost (bits). Bits spent on uncovered symbols. `E=0` → perfect grammar coverage. |
 | `CD` | Compression delta (bits). Bits saved by firing grammar patterns. `CD=0` → no patterns matched. |
-| `T` | Total cost = `E + CD`. Shown in the footer. |
-| `is_anomaly` | `true` when `e_norm = E / raw_cost > threshold` (default threshold = 0.0). |
+| `T` | Total cost = `E + CD`. Shown in the alignment footer. |
 
 E and CD trade off: a known sequence maximises CD and minimises E. A completely novel sequence has `E = full raw cost`, `CD = 0`.
-
-Anomaly gating uses only `e_norm`, not `CD`.
 
 ### Alignment table
 

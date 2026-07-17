@@ -2,7 +2,33 @@
 
 Unsupervised anomaly detection for discrete event sequences via MDL-based grammar induction (SP Multiple Alignment).
 
-Learns a hierarchical grammar from normal sequences, then scores new sequences by their encoding cost E. Sequences that compress poorly — high `e_norm` — are anomalous. Validated on LogHub HDFS achieving **F1 = 0.893** unsupervised (see [spma-experiments](https://github.com/geronimo-iia/spma-experiments)).
+Learns a hierarchical grammar from normal sequences, then scores new sequences by their encoding cost E. Sequences that compress poorly — high `e_norm` — are anomalous. Validated on LogHub HDFS achieving **F1 = 0.893** unsupervised (experiments repo, coming soon).
+
+## Background
+
+I'm a software engineer, not an ML researcher. This started as a question: is there a symbolic, interpretable approach to anomaly detection that doesn't require neural networks, labeled data, or feature engineering?
+
+That question led me to [J.G. Wolff's SP theory](https://www.cognitionresearch.org) (1993–2019) — the idea that intelligence reduces to a single operation: find the best multiple alignment between new input and stored patterns, scored by information compression.
+
+The scoring objective is two-part MDL:
+
+```
+T = G + E
+```
+
+- **G**: grammar cost — size of what you know
+- **E**: encoding cost — cost of explaining new input using the grammar
+- High E = the grammar does not explain this input = anomaly
+
+I read the primary sources, found the math sound, found the empirical record thin, and decided to implement the core idea for the problem I actually had: discrete event sequences from industrial systems. This is exploration — I'm not claiming to advance the field, just curious enough to build something and see where it lands.
+
+`spma` is that implementation. Not general AI — the anomaly detection subset: learn a grammar from normal sequences, score new sequences by E.
+
+Three properties transfer from SP theory:
+
+- **No catastrophic forgetting**: grammar is append-only — old patterns are never overwritten
+- **Structural transparency**: every inference produces an alignment table showing which patterns matched which events and at what cost — no post-hoc explanation needed
+- **One-trial learning**: a new pattern seen once is immediately a grammar entry
 
 ## Install
 
@@ -53,22 +79,29 @@ println!("{}", result.alignment);
 ## Persist a model
 
 ```rust
-use std::io::BufWriter;
+use std::io::{BufWriter, BufReader};
 use std::fs::File;
 
-// Save
-model.save(BufWriter::new(File::create("model.json")?));
-
-// Load
-let loaded = Spma::load(std::io::BufReader::new(File::open("model.json")?))?;
+// inside a Result-returning function
+model.save(BufWriter::new(File::create("model.json")?))?;
+let loaded = Spma::load(BufReader::new(File::open("model.json")?))?;
 ```
 
 ## Recalibrate thresholds
 
 ```rust
-// After retraining or collecting more normal data:
+// Refit e_distribution on a larger normal corpus without retraining the grammar.
+// Useful when you train on a small corpus for speed then collect more normal data.
+let new_corpus: Vec<Vec<&str>> = vec![
+    vec!["TRIP", "BREAKER_OPEN", "UNDERVOLTAGE", "BACKUP_RELAY"],
+    // ... more normal sequences
+];
 model.recalibrate(&new_corpus);
 ```
+
+## Examples
+
+Runnable examples covering golden path, save/load, order detection, and threshold tuning — see [examples/README.md](examples/README.md).
 
 ## CLI quickstart
 
@@ -97,6 +130,8 @@ TRIP BREAKER_OPEN OVERCURRENT  BACKUP_RELAY
 
 ### Per-level anomaly gates
 
+Flag sequences that look normal at the atom level but violate higher-level composition — e.g. correct events in wrong order.
+
 ```sh
 spma infer --model model.json --level-threshold 0:0.2 --level-threshold 1:0.5
 ```
@@ -109,6 +144,14 @@ spma infer --model model.json --level-threshold 0:0.2 --level-threshold 1:0.5
 
 Scoring objective: **T = G + E** (MDL). G is charged once per pattern per insertion; E is the residual encoding cost.
 
+## Documentation
+
+- [Architecture](docs/architecture.md) — scoring objective, beam search, learning loop
+- [Grammar model](docs/grammar-spec.md) — data model, GapConstraint, what was excluded and why
+- [Scoring](docs/scoring.md) — E_norm, threshold semantics, per-level calibration
+- [Performance](docs/performance.md) — current optimisations and improvement roadmap
+- [Known limitations](docs/known-limitations.md) — what the current implementation cannot do
+
 ## Benchmark results
 
-See [spma-experiments](https://github.com/geronimo-iia/spma-experiments) for full results including HDFS LogHub evaluation (F1 = 0.893, unsupervised, no labeled data used during training).
+Full results including HDFS LogHub evaluation (F1 = 0.893, unsupervised, no labeled data used during training) — experiments repo coming soon.
