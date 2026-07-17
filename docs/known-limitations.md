@@ -19,10 +19,6 @@ not be.
 **Workaround**: increase corpus size, or ensure training sequences have
 consistent ordering if ordering matters for your use case.
 
-## Public fields allow direct mutation of grammar internals
-
-`Spma::grammar`, `Spma::atom_costs`, and `Grammar` sub-fields are `pub`. Callers can mutate the grammar directly, making invariants (e.g. `atom_costs.len() == interner.len()`) unenforceable. Read access is intentional — inspectability is a core feature. Write access is incidental. Fix in v0.2: read-only accessors (`&Grammar`, `&[f64]`) with `pub(crate)` on fields.
-
 ## F1 ceiling on HDFS without labeled supervision
 
 On the HDFS benchmark, F1=0.893 is the unsupervised ceiling. 92% of false
