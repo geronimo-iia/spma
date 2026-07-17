@@ -34,7 +34,7 @@ Three properties transfer from SP theory:
 
 ```toml
 [dependencies]
-spma = "0.1"
+spma = "0.2"
 ```
 
 Or:
