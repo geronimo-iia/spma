@@ -26,9 +26,9 @@ pub struct InferResult {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Spma {
-    pub grammar: Grammar,
+    pub(crate) grammar: Grammar,
     beam_k: usize,
-    pub atom_costs: Vec<f64>,
+    pub(crate) atom_costs: Vec<f64>,
     max_induced_gap: usize,
 }
 
@@ -66,6 +66,14 @@ impl Spma {
             dist.level_thresholds.resize(level + 1, dist.threshold);
         }
         dist.level_thresholds[level] = threshold;
+    }
+
+    pub fn grammar(&self) -> &Grammar {
+        &self.grammar
+    }
+
+    pub fn atom_costs(&self) -> &[f64] {
+        &self.atom_costs
     }
 
     pub fn e_distribution(&self) -> &crate::model::EDistribution {

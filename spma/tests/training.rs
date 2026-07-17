@@ -15,12 +15,12 @@ fn repeated_sequences_grammar_nonempty_pattern_covers() {
     spma.train(&corpus);
 
     assert!(
-        spma.grammar.levels.len() >= 1,
+        spma.grammar().levels.len() >= 1,
         "expected at least 1 grammar level, got {}",
-        spma.grammar.levels.len()
+        spma.grammar().levels.len()
     );
 
-    let level0 = &spma.grammar.levels[0];
+    let level0 = &spma.grammar().levels[0];
     assert!(
         !level0.patterns.is_empty(),
         "level-0 patterns must not be empty"
@@ -50,10 +50,10 @@ fn varied_corpus_frequent_bigram_becomes_pattern() {
     let mut spma = Spma::new(5);
     spma.train(&corpus);
 
-    let a_id = spma.grammar.interner.get("A").expect("A must be interned");
-    let b_id = spma.grammar.interner.get("B").expect("B must be interned");
+    let a_id = spma.grammar().interner.get("A").expect("A must be interned");
+    let b_id = spma.grammar().interner.get("B").expect("B must be interned");
 
-    let level0 = &spma.grammar.levels[0];
+    let level0 = &spma.grammar().levels[0];
     let has_ab_prefix = level0.patterns.iter().any(|p| {
         if p.symbols.len() < 2 {
             return false;
@@ -78,11 +78,11 @@ fn rare_symbol_costs_more_than_frequent() {
     let mut spma = Spma::new(5);
     spma.train(&corpus);
 
-    let a_id = spma.grammar.interner.get("A").expect("A must be interned");
-    let b_id = spma.grammar.interner.get("B").expect("B must be interned");
+    let a_id = spma.grammar().interner.get("A").expect("A must be interned");
+    let b_id = spma.grammar().interner.get("B").expect("B must be interned");
 
-    let cost_a = spma.atom_costs[a_id as usize];
-    let cost_b = spma.atom_costs[b_id as usize];
+    let cost_a = spma.atom_costs()[a_id as usize];
+    let cost_b = spma.atom_costs()[b_id as usize];
 
     assert!(
         cost_a < cost_b,
@@ -111,17 +111,17 @@ fn gap_pattern_induced_from_varying_middle() {
     spma.train(&corpus);
 
     let trip_id = spma
-        .grammar
+        .grammar()
         .interner
         .get("TRIP")
         .expect("TRIP must be interned");
     let rest_id = spma
-        .grammar
+        .grammar()
         .interner
         .get("RESTORATION")
         .expect("RESTORATION must be interned");
 
-    let level0 = &spma.grammar.levels[0];
+    let level0 = &spma.grammar().levels[0];
 
     let has_gap_pattern = level0.patterns.iter().any(|p| {
         p.symbols.len() == 2
@@ -151,12 +151,12 @@ fn multilevel_level1_pattern_induced() {
     spma.train(&corpus);
 
     assert!(
-        spma.grammar.levels.len() >= 2,
+        spma.grammar().levels.len() >= 2,
         "expected >= 2 grammar levels, got {}",
-        spma.grammar.levels.len()
+        spma.grammar().levels.len()
     );
 
-    let level1 = &spma.grammar.levels[1];
+    let level1 = &spma.grammar().levels[1];
     assert!(
         !level1.patterns.is_empty(),
         "level-1 patterns must not be empty"
