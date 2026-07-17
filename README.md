@@ -2,7 +2,7 @@
 
 Unsupervised anomaly detection for discrete event sequences via MDL-based grammar induction (SP Multiple Alignment).
 
-Learns a hierarchical grammar from normal sequences, then scores new sequences by their encoding cost E. Sequences that compress poorly — high `e_norm` — are anomalous. Validated on LogHub HDFS achieving **F1 = 0.893** unsupervised ([spma-experiments](https://github.com/geronimo-iia/spma-experiments)).
+Learns a hierarchical grammar from normal sequences, then scores new sequences by their encoding cost E. Sequences that compress poorly — high `e_norm` — are anomalous. Validated on LogHub HDFS achieving **F1 = 0.893** unsupervised (1k training sequences, default threshold, preprocessed event traces — see [spma-experiments](https://github.com/geronimo-iia/spma-experiments)).
 
 ## Background
 
@@ -28,7 +28,7 @@ Three properties transfer from SP theory:
 
 - **No catastrophic forgetting**: grammar is append-only — old patterns are never overwritten
 - **Structural transparency**: every inference produces an alignment table showing which patterns matched which events and at what cost — no post-hoc explanation needed
-- **One-trial learning**: a new pattern seen once is immediately a grammar entry
+- **Append-only grammar**: patterns are never removed or overwritten — the grammar only grows, which means no forgetting and no retraining from scratch when new normal data arrives
 
 ## Install
 
@@ -71,7 +71,7 @@ println!("{}", result.alignment);
 | `e_norm` | `f64` | E normalised by raw sequence cost; 0 = fully covered |
 | `is_anomaly` | `bool` | `true` when `e_norm > threshold` (default: any uncovered symbol) |
 | `anomaly_percentile` | `f64` | Fraction of training sequences with lower `e_norm` |
-| `cd` | `f64` | Compression difference; positive = grammar compresses the sequence |
+| `cd` | `f64` | Compression difference (bits saved by grammar patterns); higher = more structure matched — use alongside `e_norm` as a confidence signal |
 | `level_costs` | `Vec<f64>` | Encoding cost per grammar level |
 | `level_e_norms` | `Vec<f64>` | Normalised cost per grammar level |
 | `alignment` | `Alignment` | Match table — which grammar patterns covered which symbols |
@@ -106,6 +106,10 @@ Runnable examples covering golden path, save/load, order detection, and threshol
 ## CLI quickstart
 
 ```sh
+cargo install spma
+```
+
+```sh
 # Train
 spma train --corpus normal.txt --output model.json
 
@@ -138,11 +142,11 @@ spma infer --model model.json --level-threshold 0:0.2 --level-threshold 1:0.5
 
 ## How it works
 
-1. **Train**: extracts frequent n-grams, then runs MDL-gated beam search to build a hierarchical grammar of patterns.
-2. **Infer**: aligns the new sequence against the grammar; symbols not covered by any pattern contribute their Shannon bit cost to E.
-3. **Score**: `e_norm = E / raw_cost`. 0 = all symbols covered by known patterns. 1 = nothing matched.
-
-Scoring objective: **T = G + E** (MDL). G is charged once per pattern per insertion; E is the residual encoding cost.
+1. **Train**: extracts frequent n-grams, then runs MDL-gated beam search to build a hierarchical grammar of patterns. The MDL gate accepts a new pattern only if it reduces total description length T = G + E — patterns that don't compress are discarded.
+2. **Gap patterns**: co-occurring symbols with variable-length fillers are captured as gap patterns (e.g. `TRIP ~[0,3]→ RESTORE`), learned automatically from the covered array.
+3. **Infer**: aligns the new sequence against the grammar via beam search; symbols not covered by any pattern contribute their Shannon bit cost to E.
+4. **Score**: `e_norm = E / raw_cost`. 0 = all symbols covered by known patterns. 1 = nothing matched. Threshold default: any uncovered symbol (`e_norm > 0`) is anomalous — tune via `recalibrate`.
+5. **Hierarchy**: patterns at level N reference patterns from level N-1, enabling detection of structural violations (wrong order, missing composition) that atom-level matching would miss.
 
 ## Documentation
 
