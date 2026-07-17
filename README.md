@@ -129,6 +129,9 @@ spma train --corpus normal.txt --output model.json
 spma infer --model model.json --input sequences.txt
 spma infer --model model.json --json < sequences.txt
 
+# Extend existing model with new sequences (no cold start)
+spma retrain --model model.json --corpus new_normal.txt
+
 # Refit e_distribution without re-training
 spma recalibrate --model model.json --corpus new_normal.txt
 
