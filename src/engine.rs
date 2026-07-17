@@ -287,7 +287,7 @@ impl Spma {
                         &best.covered,
                         &mut next_id,
                         self.max_induced_gap,
-                        level as u8,
+                        (level + 1) as u8,
                     );
                     gap_candidates.extend(new_gaps);
 
