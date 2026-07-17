@@ -21,7 +21,7 @@ fn identical_corpus_all_e_norm_zero() {
         );
     }
 
-    let pct = spma.grammar.e_distribution.percentile(1e-10);
+    let pct = spma.grammar().e_distribution.percentile(1e-10);
     assert!(
         (pct - 1.0).abs() < 1e-10,
         "all training e_norms are 0.0 → percentile(1e-10) must be 1.0, got {}",
@@ -118,7 +118,7 @@ fn level_costs_len_matches_grammar_levels() {
     spma.train(&c);
 
     let result = spma.infer(&seq);
-    let n_levels = spma.grammar.levels.len();
+    let n_levels = spma.grammar().levels.len();
 
     assert_eq!(
         result.level_costs.len(),
@@ -184,7 +184,7 @@ fn per_level_threshold_fallback_to_global() {
 
     // level_thresholds empty → is_anomaly uses global threshold only
     assert!(
-        spma.grammar.e_distribution.level_thresholds.is_empty(),
+        spma.grammar().e_distribution.level_thresholds.is_empty(),
         "level_thresholds must be empty after train"
     );
     let result = spma.infer(&["A", "B", "C"]);
@@ -196,12 +196,12 @@ fn per_level_threshold_fallback_to_global() {
     // set_level_threshold extends vec correctly
     spma.set_level_threshold(2, 0.5);
     assert_eq!(
-        spma.grammar.e_distribution.level_thresholds.len(),
+        spma.grammar().e_distribution.level_thresholds.len(),
         3,
         "level_thresholds must be resized to level+1"
     );
     assert!(
-        (spma.grammar.e_distribution.level_thresholds[2] - 0.5).abs() < 1e-12,
+        (spma.grammar().e_distribution.level_thresholds[2] - 0.5).abs() < 1e-12,
         "level_thresholds[2] must be 0.5"
     );
 }

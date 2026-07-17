@@ -34,7 +34,7 @@ Three properties transfer from SP theory:
 
 ```toml
 [dependencies]
-spma = "0.1"
+spma = "0.2"
 ```
 
 Or:
@@ -106,7 +106,7 @@ Runnable examples covering golden path, save/load, order detection, and threshol
 ## CLI quickstart
 
 ```sh
-cargo install spma
+cargo install spma-cli
 ```
 
 ```sh

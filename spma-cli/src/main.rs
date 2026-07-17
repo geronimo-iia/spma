@@ -190,7 +190,7 @@ fn print_grammar_human(
     level_filter: Option<usize>,
     model_path: &str,
 ) -> Result<()> {
-    let grammar = &spma.grammar;
+    let grammar = &spma.grammar();
     let interner = &grammar.interner;
     let dist = &grammar.e_distribution;
 
@@ -209,7 +209,7 @@ fn print_grammar_human(
 
     // Atom costs
     writeln!(out, "Atom costs:")?;
-    for (i, &cost) in spma.atom_costs.iter().enumerate() {
+    for (i, &cost) in spma.atom_costs().iter().enumerate() {
         let name = interner.name(i as u32);
         let bar_len = (cost * 10.0).round() as usize;
         let bar = "█".repeat(bar_len);
@@ -315,7 +315,7 @@ fn print_grammar_json(
 ) -> Result<()> {
     use serde_json::{json, Value};
 
-    let grammar = &spma.grammar;
+    let grammar = &spma.grammar();
     let interner = &grammar.interner;
     let dist = &grammar.e_distribution;
     let n_atoms = interner.len();
@@ -324,7 +324,7 @@ fn print_grammar_json(
     let atoms: Vec<Value> = (0..n_atoms)
         .map(|i| {
             let name = interner.name(i as u32);
-            let cost = spma.atom_costs.get(i).copied().unwrap_or(0.0);
+            let cost = spma.atom_costs().get(i).copied().unwrap_or(0.0);
             json!({"id": i, "name": name, "cost": cost})
         })
         .collect();
@@ -452,7 +452,7 @@ fn print_grammar_json(
         })
         .collect();
 
-    let atom_costs: Vec<f64> = spma.atom_costs.clone();
+    let atom_costs: Vec<f64> = spma.atom_costs().to_vec();
 
     let output = json!({
         "model_path": model_path,
@@ -517,7 +517,7 @@ fn main() -> Result<()> {
             eprintln!(
                 "trained: {} sequences, {} grammar levels, threshold={:.4}",
                 raw.len(),
-                spma.grammar.levels.len(),
+                spma.grammar().levels.len(),
                 dist.threshold
             );
         }
