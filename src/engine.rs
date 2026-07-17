@@ -50,6 +50,24 @@ impl Spma {
         self.grammar.e_distribution.threshold = threshold;
     }
 
+    /// Set anomaly threshold for a specific grammar level.
+    /// Level 0 = atom level, level 1 = pattern-ID level, etc.
+    pub fn beam_k(&self) -> usize {
+        self.beam_k
+    }
+
+    pub fn max_induced_gap(&self) -> usize {
+        self.max_induced_gap
+    }
+
+    pub fn set_level_threshold(&mut self, level: usize, threshold: f64) {
+        let dist = &mut self.grammar.e_distribution;
+        if dist.level_thresholds.len() <= level {
+            dist.level_thresholds.resize(level + 1, dist.threshold);
+        }
+        dist.level_thresholds[level] = threshold;
+    }
+
     pub fn e_distribution(&self) -> &crate::model::EDistribution {
         &self.grammar.e_distribution
     }
@@ -488,7 +506,6 @@ impl Spma {
             e_cost / raw_new_cost
         };
 
-        let is_anomaly = e_norm > self.grammar.e_distribution.threshold;
         let anomaly_percentile = self.grammar.e_distribution.anomaly_rank(e_norm); // strict < semantics: training seqs score 0.0
 
         let alignment = build_alignment(&best_raw, &new_names, &level0_patterns, &self.grammar);
@@ -600,6 +617,14 @@ impl Spma {
             current_seq = pid_seq;
             current_costs_vec = pid_costs_ext;
         }
+
+        let dist = &self.grammar.e_distribution;
+        let is_anomaly_level0 = e_norm > dist.threshold;
+        let is_anomaly_levels = level_e_norms.iter().enumerate().any(|(lvl, &lvl_e)| {
+            let t = dist.level_thresholds.get(lvl).copied().unwrap_or(f64::INFINITY);
+            lvl_e > t
+        });
+        let is_anomaly = is_anomaly_level0 || is_anomaly_levels;
 
         InferResult {
             e_cost,

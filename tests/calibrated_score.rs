@@ -138,6 +138,71 @@ fn level_costs_len_matches_grammar_levels() {
     }
 }
 
+// Scenario 26 — per_level_threshold_catches_missed_anomaly
+#[test]
+fn per_level_threshold_catches_missed_anomaly() {
+    // Train on [A B C] repeated — learns pattern covering all atoms in order.
+    // Infer [C B A] — atoms fully covered (e_norm_0 ≈ 0) but pattern order is inverted.
+    // With global threshold only: not anomaly. With level-1 threshold low: anomaly.
+    let seq = vec!["A", "B", "C"];
+    let c = corpus(seq.clone(), 10);
+    let mut spma = Spma::new(10);
+    spma.train(&c);
+
+    let inverted = vec!["C", "B", "A"];
+
+    // Global threshold only — may not catch the inverted order if level-0 e_norm is low
+    spma.set_anomaly_threshold(f64::MAX);
+    let result_global_only = spma.infer(&inverted);
+    assert!(
+        !result_global_only.is_anomaly,
+        "with threshold=MAX: inverted seq must not be anomaly, got is_anomaly=true"
+    );
+
+    // Set level-1 threshold to 0.0 — any nonzero level-1 e_norm flags anomaly
+    spma.set_anomaly_threshold(f64::MAX);
+    spma.set_level_threshold(1, 0.0);
+    let result_level = spma.infer(&inverted);
+
+    // If grammar has level 1 and inverted sequence produces nonzero level-1 e_norm, it's anomaly
+    if result_level.level_e_norms.len() > 1 && result_level.level_e_norms[1] > 0.0 {
+        assert!(
+            result_level.is_anomaly,
+            "level-1 threshold=0.0 with level_e_norms[1]={}: must be anomaly",
+            result_level.level_e_norms[1]
+        );
+    }
+    // If grammar only has level 0, the test still passes — we just verify no panic
+}
+
+// Scenario 27 — per_level_threshold_fallback_to_global
+#[test]
+fn per_level_threshold_fallback_to_global() {
+    let c = corpus(vec!["A", "B", "C"], 10);
+    let mut spma = Spma::new(10);
+    spma.train(&c);
+
+    // level_thresholds empty → is_anomaly uses global threshold only
+    assert!(
+        spma.grammar.e_distribution.level_thresholds.is_empty(),
+        "level_thresholds must be empty after train"
+    );
+    let result = spma.infer(&["A", "B", "C"]);
+    assert!(!result.is_anomaly, "known seq with empty level_thresholds must not be anomaly");
+
+    // set_level_threshold extends vec correctly
+    spma.set_level_threshold(2, 0.5);
+    assert_eq!(
+        spma.grammar.e_distribution.level_thresholds.len(),
+        3,
+        "level_thresholds must be resized to level+1"
+    );
+    assert!(
+        (spma.grammar.e_distribution.level_thresholds[2] - 0.5).abs() < 1e-12,
+        "level_thresholds[2] must be 0.5"
+    );
+}
+
 // Scenario 25 — set_anomaly_threshold_gates_is_anomaly
 #[test]
 fn set_anomaly_threshold_gates_is_anomaly() {

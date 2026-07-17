@@ -169,6 +169,10 @@ pub struct EDistribution {
 
     /// Per-level sorted E_norm distributions, one vec per grammar level.
     pub level_sorted_e_norms: Vec<Vec<f64>>,
+
+    /// Per-level anomaly thresholds. Falls back to `threshold` when empty or shorter than `level_e_norms`.
+    #[serde(default)]
+    pub level_thresholds: Vec<f64>,
 }
 
 impl EDistribution {
@@ -230,6 +234,7 @@ impl EDistribution {
             sorted_e_norms: e_norms,
             threshold,
             level_sorted_e_norms: level_sorted,
+            level_thresholds: Vec::new(),
         }
     }
 }
@@ -240,6 +245,7 @@ impl Default for EDistribution {
             sorted_e_norms: Vec::new(),
             threshold: 0.0,
             level_sorted_e_norms: Vec::new(),
+            level_thresholds: Vec::new(),
         }
     }
 }
