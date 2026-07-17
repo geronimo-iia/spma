@@ -153,8 +153,7 @@ impl GrammarLevel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EDistribution {
     /// E_norm values from training sequences, sorted ascending.
-    /// Private — access via `percentile()`.
-    sorted_e_norms: Vec<f64>,
+    pub(crate) sorted_e_norms: Vec<f64>,
 
     /// Anomaly gate: `E_norm > threshold` → `is_anomaly`.
     /// Default: `0.0` — any uncovered symbol = anomaly (same as original `E > 0` behavior).
