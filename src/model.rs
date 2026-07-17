@@ -223,6 +223,11 @@ impl EDistribution {
         self.sorted_e_norms[idx]
     }
 
+    #[cfg(test)]
+    pub fn sorted_e_norms_len_for_test(&self) -> usize {
+        self.sorted_e_norms.len()
+    }
+
     /// Populate from a vec of E_norm values (will be sorted in place).
     pub fn fit(mut e_norms: Vec<f64>, threshold: f64, level_e_norms: Vec<Vec<f64>>) -> Self {
         e_norms.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));

@@ -637,6 +637,25 @@ impl Spma {
             alignment,
         }
     }
+
+    pub fn recalibrate(&mut self, corpus: &[Vec<&str>]) {
+        let mut e_norms: Vec<f64> = Vec::with_capacity(corpus.len());
+        let mut level_e_norms_vecs: Vec<Vec<f64>> = Vec::new();
+
+        for seq in corpus {
+            let result = self.infer(seq);
+            e_norms.push(result.e_norm);
+            for (i, &lvl_e) in result.level_e_norms.iter().enumerate() {
+                if level_e_norms_vecs.len() <= i {
+                    level_e_norms_vecs.push(Vec::new());
+                }
+                level_e_norms_vecs[i].push(lvl_e);
+            }
+        }
+
+        self.grammar.e_distribution =
+            crate::model::EDistribution::fit(e_norms, 0.0, level_e_norms_vecs);
+    }
 }
 
 // ── extract_frequent_ngrams ───────────────────────────────────────────────────
@@ -1193,5 +1212,54 @@ mod tests {
             original.e_norm,
             restored.e_norm
         );
+    }
+
+    #[test]
+    fn recalibrate_does_not_change_grammar_structure() {
+        let seq = vec!["A", "B", "C", "A", "B", "C"];
+        let corpus = make_corpus(seq.clone(), 6);
+        let mut spma = Spma::new(5);
+        spma.train(&corpus);
+
+        let levels_before: Vec<usize> = spma.grammar.levels.iter().map(|l| l.patterns.len()).collect();
+        let atom_costs_before = spma.atom_costs.clone();
+        let interner_len_before = spma.grammar.interner.len();
+
+        let corpus_refs: Vec<Vec<&str>> = corpus.iter().map(|s| s.iter().copied().collect()).collect();
+        spma.recalibrate(&corpus_refs);
+
+        let levels_after: Vec<usize> = spma.grammar.levels.iter().map(|l| l.patterns.len()).collect();
+        assert_eq!(levels_before, levels_after, "grammar levels must not change");
+        assert_eq!(atom_costs_before, spma.atom_costs, "atom_costs must not change");
+        assert_eq!(interner_len_before, spma.grammar.interner.len(), "interner must not change");
+
+        assert!(
+            spma.grammar.e_distribution.sorted_e_norms_len_for_test() > 0,
+            "e_distribution must be populated after recalibrate"
+        );
+    }
+
+    #[test]
+    fn recalibrate_after_pattern_removal() {
+        let seq = vec!["A", "B", "C", "A", "B", "C"];
+        let corpus = make_corpus(seq.clone(), 6);
+        let mut spma = Spma::new(5);
+        spma.train(&corpus);
+
+        let original_count = spma.grammar.levels[0].patterns.len();
+        if original_count > 1 {
+            spma.grammar.levels[0].patterns.pop();
+            let reduced_count = spma.grammar.levels[0].patterns.len();
+            assert_eq!(reduced_count, original_count - 1);
+
+            let corpus_refs: Vec<Vec<&str>> = corpus.iter().map(|s| s.iter().copied().collect()).collect();
+            spma.recalibrate(&corpus_refs);
+
+            assert_eq!(
+                spma.grammar.levels[0].patterns.len(),
+                reduced_count,
+                "recalibrate must not re-add removed patterns"
+            );
+        }
     }
 }
