@@ -87,6 +87,18 @@ model.save(BufWriter::new(File::create("model.json")?))?;
 let loaded = Spma::load(BufReader::new(File::open("model.json")?))?;
 ```
 
+## Retrain on new data
+
+```rust
+// Extend the grammar with new normal sequences — no cold start.
+// Prior patterns and atom frequencies are preserved.
+let new_corpus: Vec<Vec<&str>> = vec![
+    vec!["TRIP", "BREAKER_OPEN", "OVERHEAT", "BACKUP_RELAY"],
+    // ... more sequences
+];
+model.retrain(&new_corpus);
+```
+
 ## Recalibrate thresholds
 
 ```rust
