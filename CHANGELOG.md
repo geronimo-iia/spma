@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- `Spma::retrain` — extends an already-trained model with a new batch of sequences
+  without discarding prior grammar; cumulative atom frequencies persisted on `Spma`
+  and serialized with the model
+- CLI `retrain` subcommand: `spma retrain --model model.json --corpus new_normal.txt`
+
 ### Changed
 
 - Cargo workspace split: `spma` lib crate (no `anyhow`/`clap`/`mimalloc`) + `spma-cli` bin crate; install with `cargo install spma-cli`
