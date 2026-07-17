@@ -460,4 +460,110 @@ mod tests {
         assert_eq!(best.match_log[0].old_pos, 0);
         assert_eq!(best.match_log[1].old_pos, 1);
     }
+
+    // Scenarios 1-7: integration-level beam correctness (migrated from tests/beam_correctness.rs)
+
+    fn best_result(new: &[u32], patterns: &[&Pattern], k: usize, costs: &[f64]) -> RawAlignment {
+        let mut results = beam_search(new, patterns, k, costs);
+        results.sort_by(|a, b| {
+            b.cd.partial_cmp(&a.cd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    let ac = a.covered.iter().filter(|&&c| c).count();
+                    let bc = b.covered.iter().filter(|&&c| c).count();
+                    bc.cmp(&ac)
+                })
+        });
+        results.into_iter().next().expect("beam_search returned empty")
+    }
+
+    #[test]
+    fn scenario1_contiguous_exact_match() {
+        let new = vec![0u32, 1, 2];
+        let p0 = Pattern::new_contiguous(0, vec![SymbolRef::Atom(0), SymbolRef::Atom(1), SymbolRef::Atom(2)], 0);
+        let old = vec![&p0];
+        let costs = vec![1.0; 3];
+        let r = best_result(&new, &old, 10, &costs);
+        assert!(r.covered[0]);
+        assert!(r.covered[1]);
+        assert!(r.covered[2]);
+        assert_eq!(r.e_cost, 0.0);
+        assert_eq!(r.match_log.len(), 3);
+    }
+
+    #[test]
+    fn scenario2_contiguous_partial_match() {
+        let new = vec![0u32, 1, 2];
+        let p0 = Pattern::new_contiguous(0, vec![SymbolRef::Atom(0), SymbolRef::Atom(1)], 0);
+        let old = vec![&p0];
+        let costs = vec![1.0f64, 1.0, 2.0];
+        let r = best_result(&new, &old, 10, &costs);
+        assert!(r.covered[0]);
+        assert!(r.covered[1]);
+        assert!(!r.covered[2]);
+        assert!((r.e_cost - 2.0).abs() < 1e-10);
+        assert_eq!(r.match_log.len(), 2);
+    }
+
+    #[test]
+    fn scenario3_gap_match_within_window() {
+        let new = vec![0u32, 1, 2];
+        let p0 = Pattern::new_with_gaps(0, vec![SymbolRef::Atom(0), SymbolRef::Atom(2)], vec![crate::model::GapConstraint::up_to(2)], 0);
+        let old = vec![&p0];
+        let costs = vec![1.0; 3];
+        let r = best_result(&new, &old, 10, &costs);
+        assert!(r.covered[0]);
+        assert!(!r.covered[1]);
+        assert!(r.covered[2]);
+        assert!((r.e_cost - 1.0).abs() < 1e-10);
+        assert_eq!(r.match_log.len(), 2);
+    }
+
+    #[test]
+    fn scenario4_gap_rejected_when_skip_exceeds_max() {
+        let new = vec![0u32, 1, 2, 3, 4];
+        let p0 = Pattern::new_with_gaps(0, vec![SymbolRef::Atom(0), SymbolRef::Atom(4)], vec![crate::model::GapConstraint::up_to(2)], 0);
+        let old = vec![&p0];
+        let costs = vec![1.0; 5];
+        let r = best_result(&new, &old, 10, &costs);
+        assert!(!(r.covered[0] && r.covered[4]));
+    }
+
+    #[test]
+    fn scenario5_gap_wrong_order() {
+        let new = vec![2u32, 1, 0];
+        let p0 = Pattern::new_with_gaps(0, vec![SymbolRef::Atom(0), SymbolRef::Atom(2)], vec![crate::model::GapConstraint::up_to(2)], 0);
+        let old = vec![&p0];
+        let costs = vec![1.0; 3];
+        let r = best_result(&new, &old, 10, &costs);
+        assert!(!(r.covered[0] && r.covered[2]));
+    }
+
+    #[test]
+    fn scenario6_two_non_overlapping_patterns() {
+        let new = vec![0u32, 1, 2, 3];
+        let p0 = Pattern::new_contiguous(0, vec![SymbolRef::Atom(0), SymbolRef::Atom(1)], 0);
+        let p1 = Pattern::new_contiguous(1, vec![SymbolRef::Atom(2), SymbolRef::Atom(3)], 0);
+        let old = vec![&p0, &p1];
+        let costs = vec![1.0; 4];
+        let r = best_result(&new, &old, 20, &costs);
+        assert_eq!(r.e_cost, 0.0);
+        assert!(r.covered.iter().all(|&c| c));
+        assert!(r.match_log.iter().any(|e| e.old_idx == 0));
+        assert!(r.match_log.iter().any(|e| e.old_idx == 1));
+    }
+
+    #[test]
+    fn scenario7_single_symbol_pattern_matches_twice() {
+        let new = vec![0u32, 1, 0];
+        let p0 = Pattern::new_contiguous(0, vec![SymbolRef::Atom(0)], 0);
+        let old = vec![&p0];
+        let costs = vec![1.0f64, 2.0];
+        let r = best_result(&new, &old, 10, &costs);
+        assert!(r.covered[0]);
+        assert!(!r.covered[1]);
+        assert!(r.covered[2]);
+        assert!((r.e_cost - 2.0).abs() < 1e-10);
+        assert_eq!(r.match_log.len(), 2);
+    }
 }
