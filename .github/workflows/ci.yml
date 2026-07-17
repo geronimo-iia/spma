@@ -35,7 +35,7 @@ jobs:
         run: cargo build
 
       - name: Test
-        run: cargo test
+        run: cargo test --locked
 
       - name: Install cargo-audit
         if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'

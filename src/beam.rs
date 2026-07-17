@@ -1,30 +1,60 @@
 use std::collections::HashMap;
 
-use crate::AlignmentType;
+use crate::model::Pattern;
 
-/// A finalized beam alignment result.
+// ── MatchEvent / MatchArena ───────────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
-pub struct BeamAlignment {
-    pub covered_new: Vec<bool>,
-    pub old_pattern_indices: Vec<usize>,
-    pub g: f64,
-    pub e: f64,
-    pub t: f64,
-    pub cd: f64,
-    pub alignment_type: AlignmentType,
+pub struct MatchEvent {
+    pub old_idx: usize,
+    pub old_pos: usize,
+    pub new_pos: usize,
+    pub cost: f64,
 }
 
-/// Internal partial alignment state during beam search.
-#[derive(Debug, Clone)]
+struct MatchNode {
+    event: MatchEvent,
+    parent: Option<u32>,
+}
+
+struct MatchArena {
+    nodes: Vec<MatchNode>,
+}
+
+impl MatchArena {
+    fn new() -> Self {
+        Self { nodes: Vec::new() }
+    }
+
+    fn push(&mut self, event: MatchEvent, parent: Option<u32>) -> u32 {
+        let idx = self.nodes.len() as u32;
+        self.nodes.push(MatchNode { event, parent });
+        idx
+    }
+
+    fn collect(&self, tail: Option<u32>) -> Vec<MatchEvent> {
+        let mut out = Vec::new();
+        let mut cur = tail;
+        while let Some(i) = cur {
+            let node = &self.nodes[i as usize];
+            out.push(node.event.clone());
+            cur = node.parent;
+        }
+        out.reverse();
+        out
+    }
+}
+
+// ── PartialAlignment ──────────────────────────────────────────────────────────
+
+#[derive(Clone)]
 struct PartialAlignment {
     old_cursors: HashMap<usize, usize>,
-    // Tracks the last matched New position per old pattern — enforces span contiguity.
     new_cursors: HashMap<usize, usize>,
-    // Highest New position covered by any Old pattern — enforces inter-pattern ordering.
     max_covered_new: usize,
     covered_new: Vec<bool>,
-    covered_cost: f64,
     cd: f64,
+    log_tail: Option<u32>,
 }
 
 impl PartialAlignment {
@@ -34,8 +64,8 @@ impl PartialAlignment {
             new_cursors: HashMap::new(),
             max_covered_new: 0,
             covered_new: vec![false; new_len],
-            covered_cost: 0.0,
             cd: 0.0,
+            log_tail: None,
         }
     }
 
@@ -49,142 +79,105 @@ impl PartialAlignment {
         old_pos: usize,
         new_pos: usize,
         symbol_cost: f64,
+        arena: &mut MatchArena,
     ) -> Self {
         let mut next = self.clone();
         next.covered_new[new_pos] = true;
-        next.covered_cost += symbol_cost;
-        // G for existing grammar patterns is 0 (cost was paid at insertion time).
-        // CD = covered_cost: bits saved by not encoding matched symbols raw.
+        next.cd += symbol_cost;
         next.old_cursors.insert(old_idx, old_pos);
         next.new_cursors.insert(old_idx, new_pos);
         if new_pos > next.max_covered_new {
             next.max_covered_new = new_pos;
         }
-        next.cd = next.covered_cost;
+        let event = MatchEvent {
+            old_idx,
+            old_pos,
+            new_pos,
+            cost: symbol_cost,
+        };
+        next.log_tail = Some(arena.push(event, self.log_tail));
         next
     }
 
-    // `new_pos` is needed to enforce span contiguity for subsequent symbols of the same
-    // Old pattern. First symbol of a pattern can start at any New position; thereafter
-    // each successive symbol must be at exactly prev_new_pos + 1.
-    // Single-symbol patterns (old_pos == prev_old == 0) may re-match at non-contiguous
-    // New positions — contiguity only applies when advancing within a multi-symbol pattern.
-    // Inter-pattern ordering: first symbol of a NEW pattern (not yet in old_cursors) must
-    // start at new_pos >= max_covered_new (patterns consumed left-to-right in New).
-    fn can_extend(&self, old_idx: usize, old_pos: usize, new_pos: usize) -> bool {
-        match self.old_cursors.get(&old_idx) {
-            Some(&prev_old) => {
-                if old_pos > prev_old {
-                    // Advancing to next symbol in multi-symbol pattern → New must be contiguous.
-                    self.new_cursors
-                        .get(&old_idx)
-                        .map_or(true, |&prev_new| new_pos == prev_new + 1)
+    fn can_extend(
+        &self,
+        old_idx: usize,
+        old_pos: usize,
+        new_pos: usize,
+        patterns: &[&Pattern],
+    ) -> bool {
+        let pat = patterns[old_idx];
+        match self.new_cursors.get(&old_idx) {
+            None => old_pos == 0 && new_pos >= self.max_covered_new,
+            Some(&prev_new) => {
+                if old_pos == 0 {
+                    // Fresh restart of same pattern — must not overlap prior matches.
+                    new_pos >= self.max_covered_new
+                } else if pat.gaps.is_empty() {
+                    // Advancing within a contiguous pattern.
+                    new_pos == prev_new + 1
                 } else {
-                    // old_pos == prev_old: single-symbol re-use at a new New position.
-                    old_pos >= prev_old
+                    // Advancing within a gap pattern — check constraint.
+                    let gap = &pat.gaps[old_pos - 1];
+                    let skip = new_pos.saturating_sub(prev_new + 1);
+                    skip >= gap.min && skip <= gap.max
                 }
             }
-            // First symbol of this Old pattern: enforce inter-pattern ordering.
-            None => new_pos >= self.max_covered_new,
         }
     }
 
-    fn finalize(self, new: &[u32], old: &[Vec<u32>], costs: &[f64]) -> BeamAlignment {
-        let raw_new_cost: f64 = new.iter().map(|&id| costs[id as usize]).sum();
-        let e: f64 = new
+    fn finalize(self, new: &[u32], costs: &[f64], arena: &MatchArena) -> RawAlignment {
+        let e_cost: f64 = new
             .iter()
             .enumerate()
             .filter(|&(i, _)| !self.covered_new[i])
             .map(|(_, &id)| costs[id as usize])
             .sum();
-        // G=0: all patterns in old[] are already in the grammar (cost paid at insertion).
-        // T = E (uncovered symbols only). CD = raw - T = covered symbols' cost.
-        let g = 0.0;
-        let t = g + e;
-        let cd = raw_new_cost - t;
-
-        let old_pattern_indices: Vec<usize> = self.old_cursors.keys().copied().collect();
-
-        // Determine alignment type
-        let new_fully_covered = self.covered_new.iter().all(|&c| c);
-        // Check that every symbol in each used Old pattern appears in covered New positions
-        let old_all_matched = old_pattern_indices.iter().all(|&oi| {
-            let old_pat = &old[oi];
-            // Every symbol in this old pattern must appear as a covered match
-            // We need to check that the old pattern is fully "consumed"
-            // Since we track cursors monotonically, check if cursor reached the last position
-            // Actually: a single-symbol old pattern matched at pos 0 means cursor=0, len=1 → fully matched
-            // For multi-symbol: we need all symbols to have been matched
-            // The beam search only matches one symbol per new position, so for full coverage
-            // of an old pattern, we need len(old_pat) symbols matched from it.
-            // We can count how many new positions are covered by this old pattern.
-            // But we don't track per-old-pattern match count in this simplified version.
-            // Alternative: check if old pattern length == number of new positions matched from it.
-            // We don't have that info directly. Use a simpler heuristic:
-            // For FullA, all old pattern symbols must appear somewhere in covered new positions.
-            // This is an approximation — check that every symbol in old[oi] appears in covered new.
-            let covered_syms: Vec<u32> = new
-                .iter()
-                .enumerate()
-                .filter(|&(i, _)| self.covered_new[i])
-                .map(|(_, &id)| id)
-                .collect();
-            old_pat.iter().all(|sym| covered_syms.contains(sym))
-        });
-
-        let alignment_type = if new_fully_covered && old_all_matched {
-            AlignmentType::FullA
-        } else if !new_fully_covered && old_all_matched {
-            AlignmentType::FullB
-        } else {
-            AlignmentType::Partial
-        };
-
-        BeamAlignment {
-            covered_new: self.covered_new,
-            old_pattern_indices,
-            g,
-            e,
-            t,
-            cd,
-            alignment_type,
+        let match_log = arena.collect(self.log_tail);
+        RawAlignment {
+            match_log,
+            covered: self.covered_new,
+            e_cost,
+            cd: self.cd,
         }
     }
 }
 
-impl BeamAlignment {
-    /// Returns indices of Old patterns that contributed at least one matched symbol.
-    pub fn matched_old_pattern_ids(&self) -> Vec<usize> {
-        self.old_pattern_indices.clone()
-    }
+// ── Output types ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct RawAlignment {
+    pub match_log: Vec<MatchEvent>,
+    pub covered: Vec<bool>,
+    pub e_cost: f64,
+    pub cd: f64,
 }
 
-/// Staged beam search: find top-K alignments between a New pattern and Old patterns.
-///
-/// - `new`: symbol IDs of the new pattern
-/// - `old`: each old pattern as a vec of symbol IDs
-/// - `beam_k`: beam width (keep top-K partial alignments at each step)
-/// - `costs`: cost table indexed by symbol ID
-///
-/// Returns top-K complete alignments sorted by CD descending.
+// ── beam_search ───────────────────────────────────────────────────────────────
+
 pub fn beam_search(
     new: &[u32],
-    old: &[Vec<u32>],
+    old: &[&Pattern],
     beam_k: usize,
     costs: &[f64],
-) -> Vec<BeamAlignment> {
+) -> Vec<RawAlignment> {
     if new.is_empty() {
         return vec![];
     }
 
-    // Precompute: for each symbol ID, which (old_idx, position) pairs contain it
+    // For each symbol ID: which (old_idx, old_pos) pairs contain it
     let mut symbol_to_old: HashMap<u32, Vec<(usize, usize)>> = HashMap::new();
     for (oi, pat) in old.iter().enumerate() {
-        for (pos, &sym) in pat.iter().enumerate() {
-            symbol_to_old.entry(sym).or_default().push((oi, pos));
+        for (pos, sym_ref) in pat.symbols.iter().enumerate() {
+            let id = match sym_ref {
+                crate::model::SymbolRef::Atom(id) => *id,
+                crate::model::SymbolRef::Pattern(id) => *id,
+            };
+            symbol_to_old.entry(id).or_default().push((oi, pos));
         }
     }
 
+    let mut arena = MatchArena::new();
     let mut candidates = vec![PartialAlignment::new(new.len())];
 
     for (p, &sym) in new.iter().enumerate() {
@@ -192,20 +185,18 @@ pub fn beam_search(
         let mut next_candidates = Vec::with_capacity(candidates.len() * 2);
 
         for candidate in &candidates {
-            // Option A: skip this position
             next_candidates.push(candidate.extend_skip());
 
-            // Option B: match against old patterns
             if let Some(matches) = symbol_to_old.get(&sym) {
                 for &(oi, q) in matches {
-                    if candidate.can_extend(oi, q, p) {
-                        next_candidates.push(candidate.extend_match(oi, q, p, sym_cost));
+                    if candidate.can_extend(oi, q, p, old) {
+                        next_candidates
+                            .push(candidate.extend_match(oi, q, p, sym_cost, &mut arena));
                     }
                 }
             }
         }
 
-        // Prune to beam_k: sort by CD descending, break ties by coverage count descending
         next_candidates.sort_by(|a, b| {
             b.cd.partial_cmp(&a.cd)
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -214,111 +205,387 @@ pub fn beam_search(
                     let b_cov = b.covered_new.iter().filter(|&&c| c).count();
                     b_cov.cmp(&a_cov)
                 })
+                .then_with(|| a.covered_new.cmp(&b.covered_new))
         });
         next_candidates.truncate(beam_k);
         candidates = next_candidates;
     }
 
-    // Finalize and sort by CD descending
-    let mut results: Vec<BeamAlignment> = candidates
+    let mut results: Vec<RawAlignment> = candidates
         .into_iter()
-        .map(|c| c.finalize(new, old, costs))
+        .map(|c| c.finalize(new, costs, &arena))
         .collect();
     results.sort_by(|a, b| b.cd.partial_cmp(&a.cd).unwrap_or(std::cmp::Ordering::Equal));
     results
 }
 
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Pattern, SymbolRef};
+
+    fn contiguous_pattern(id: u32, atoms: &[u32]) -> Pattern {
+        Pattern::new_contiguous(id, atoms.iter().map(|&a| SymbolRef::Atom(a)).collect(), 0)
+    }
+
+    #[test]
+    fn test_arena_fork() {
+        let mut arena = MatchArena::new();
+        let root = arena.push(
+            MatchEvent {
+                old_idx: 0,
+                old_pos: 0,
+                new_pos: 0,
+                cost: 1.0,
+            },
+            None,
+        );
+        let branch_a = arena.push(
+            MatchEvent {
+                old_idx: 0,
+                old_pos: 1,
+                new_pos: 1,
+                cost: 2.0,
+            },
+            Some(root),
+        );
+        let branch_b = arena.push(
+            MatchEvent {
+                old_idx: 1,
+                old_pos: 0,
+                new_pos: 2,
+                cost: 3.0,
+            },
+            Some(root),
+        );
+
+        let log_a = arena.collect(Some(branch_a));
+        assert_eq!(log_a.len(), 2);
+        assert_eq!(log_a[0].new_pos, 0);
+        assert_eq!(log_a[1].new_pos, 1);
+        assert_eq!(log_a[1].old_idx, 0);
+
+        let log_b = arena.collect(Some(branch_b));
+        assert_eq!(log_b.len(), 2);
+        assert_eq!(log_b[0].new_pos, 0);
+        assert_eq!(log_b[1].new_pos, 2);
+        assert_eq!(log_b[1].old_idx, 1);
+    }
 
     #[test]
     fn test_beam_empty_old() {
         let new = vec![0u32, 1, 2];
-        let old: Vec<Vec<u32>> = vec![];
+        let old: Vec<Pattern> = vec![];
+        let old_refs: Vec<&Pattern> = old.iter().collect();
         let costs = vec![1.0, 2.0, 3.0];
-        let results = beam_search(&new, &old, 5, &costs);
+        let results = beam_search(&new, &old_refs, 5, &costs);
         assert_eq!(results.len(), 1);
-        assert!(results[0].covered_new.iter().all(|&c| !c));
+        assert!(results[0].covered.iter().all(|&c| !c));
         assert_eq!(results[0].cd, 0.0);
     }
 
     #[test]
     fn test_beam_single_match() {
         let new = vec![0u32, 1];
-        let old = vec![vec![0u32]];
+        let p0 = contiguous_pattern(0, &[0u32]);
+        let old_refs = vec![&p0];
         let costs = vec![2.0, 3.0];
-        let results = beam_search(&new, &old, 5, &costs);
+        let results = beam_search(&new, &old_refs, 5, &costs);
         assert!(!results.is_empty());
         let best = &results[0];
-        assert!(best.covered_new[0]);
+        assert!(best.covered[0]);
     }
 
     #[test]
     fn span_contiguity_non_contiguous_gap_not_covered() {
         // old = [[A, B]], new = [A, X, B]
-        // B is at new[2], but A matched at new[0] → next must be new[1], not new[2].
-        // B at new[2] must NOT be covered.
-        // IDs: A=0, X=1, B=2
+        // B at new[2] must NOT be covered — gap between A(0) and B(2)
         let new = vec![0u32, 1, 2];
-        let old = vec![vec![0u32, 2u32]]; // [A, B]
+        let p0 = contiguous_pattern(0, &[0u32, 2u32]);
+        let old_refs = vec![&p0];
         let costs = vec![1.0, 1.0, 1.0];
-        let results = beam_search(&new, &old, 10, &costs);
+        let results = beam_search(&new, &old_refs, 10, &costs);
         let best = &results[0];
-        // A at new[0] may be covered (first symbol, any start OK)
-        // B at new[2] must NOT be covered (gap at new[1])
         assert!(
-            !best.covered_new[2],
+            !best.covered[2],
             "B at new[2] must not be covered: gap between A(new[0]) and B(new[2])"
         );
     }
 
     #[test]
     fn span_contiguity_contiguous_pair_both_covered() {
-        // old = [[A, B]], new = [A, B, C]
-        // A at new[0], B at new[1] → contiguous → both covered. C uncovered.
-        // IDs: A=0, B=1, C=2
+        // old = [[A, B]], new = [A, B, C] → A and B covered, C not
         let new = vec![0u32, 1, 2];
-        let old = vec![vec![0u32, 1u32]]; // [A, B]
+        let p0 = contiguous_pattern(0, &[0u32, 1u32]);
+        let old_refs = vec![&p0];
         let costs = vec![1.0, 1.0, 1.0];
-        let results = beam_search(&new, &old, 10, &costs);
+        let results = beam_search(&new, &old_refs, 10, &costs);
         let best = &results[0];
-        assert!(best.covered_new[0], "A at new[0] should be covered");
-        assert!(best.covered_new[1], "B at new[1] should be covered");
-        assert!(!best.covered_new[2], "C at new[2] should not be covered");
+        assert!(best.covered[0], "A at new[0] should be covered");
+        assert!(best.covered[1], "B at new[1] should be covered");
+        assert!(!best.covered[2], "C at new[2] should not be covered");
     }
 
     #[test]
     fn inter_pattern_order_correct_order_fully_covered() {
-        // old = [[A, B], [C, D]], new = [A, B, C, D]
-        // Patterns in correct New-order → E = 0.
-        // IDs: A=0, B=1, C=2, D=3
+        // old = [[A,B],[C,D]], new = [A,B,C,D] → e_cost == 0
         let new = vec![0u32, 1, 2, 3];
-        let old = vec![vec![0u32, 1u32], vec![2u32, 3u32]];
+        let p0 = contiguous_pattern(0, &[0u32, 1u32]);
+        let p1 = contiguous_pattern(1, &[2u32, 3u32]);
+        let old_refs = vec![&p0, &p1];
         let costs = vec![1.0, 1.0, 1.0, 1.0];
-        let results = beam_search(&new, &old, 20, &costs);
+        let results = beam_search(&new, &old_refs, 20, &costs);
         let best = &results[0];
-        assert_eq!(best.e, 0.0, "correct order: all symbols must be covered");
-        assert!(best.covered_new.iter().all(|&c| c));
+        assert_eq!(
+            best.e_cost, 0.0,
+            "correct order: all symbols must be covered"
+        );
+        assert!(best.covered.iter().all(|&c| c));
     }
 
     #[test]
     fn inter_pattern_order_interleaved_rejected() {
-        // old = [[A, B], [C, D]], new = [A, C, B, D]
-        // [A,B] can start at new[0] (A). Then [C,D] would need to start >= 0 — C is at new[1] >= 0 OK.
-        // But then [A,B] needs B at new[2] which is contiguous with A at new[0]? No: new[2] != new[0]+1.
-        // Span contiguity (Issue #3) blocks B at new[2] for [A,B] that started at new[0].
-        // [C,D] can match C at new[1], then D must be at new[2] — but new[2]=B not D → blocked.
-        // Net result: at most one symbol covered per pattern → E > 0.
-        // IDs: A=0, B=1, C=2, D=3; new order: A C B D
+        // old = [[A,B],[C,D]], new = [A,C,B,D] → interleaved, e_cost > 0
         let new = vec![0u32, 2, 1, 3];
-        let old = vec![vec![0u32, 1u32], vec![2u32, 3u32]];
+        let p0 = contiguous_pattern(0, &[0u32, 1u32]);
+        let p1 = contiguous_pattern(1, &[2u32, 3u32]);
+        let old_refs = vec![&p0, &p1];
         let costs = vec![1.0, 1.0, 1.0, 1.0];
-        let results = beam_search(&new, &old, 20, &costs);
+        let results = beam_search(&new, &old_refs, 20, &costs);
         let best = &results[0];
         assert!(
-            best.e > 0.0,
+            best.e_cost > 0.0,
             "interleaved pattern: must not fully cover [A,C,B,D] with [A,B] and [C,D]"
         );
+    }
+
+    #[test]
+    fn single_symbol_pattern_matches_twice() {
+        // old = [[A]], new = [A, B, A]
+        // Pattern [A] should cover new[0] and new[2]. E = cost(B).
+        let new = vec![0u32, 1u32, 0u32];
+        let p0 = contiguous_pattern(0, &[0u32]);
+        let old_refs = vec![&p0];
+        let costs = vec![1.0, 1.0];
+        let results = beam_search(&new, &old_refs, 10, &costs);
+        let best = &results[0];
+        assert!(best.covered[0], "A at new[0] should be covered");
+        assert!(!best.covered[1], "B at new[1] should not be covered");
+        assert!(best.covered[2], "A at new[2] should be covered");
+        assert_eq!(best.e_cost, 1.0);
+    }
+
+    fn gap_pattern(id: u32, atoms: &[u32], max_gap: usize) -> Pattern {
+        assert_eq!(
+            atoms.len(),
+            2,
+            "gap_pattern helper only supports 2-symbol patterns"
+        );
+        Pattern::new_with_gaps(
+            id,
+            atoms.iter().map(|&a| SymbolRef::Atom(a)).collect(),
+            vec![crate::model::GapConstraint::up_to(max_gap)],
+            0,
+        )
+    }
+
+    #[test]
+    fn gap_match_within_window_both_covered() {
+        // Pattern [A,B] gap(0,2), new=[A,X,B] → skip=1 in [0,2] → both covered
+        let new = vec![0u32, 1u32, 2u32]; // A=0, X=1, B=2
+        let p0 = gap_pattern(0, &[0u32, 2u32], 2);
+        let old_refs = vec![&p0];
+        let costs = vec![1.0, 1.0, 1.0];
+        let results = beam_search(&new, &old_refs, 10, &costs);
+        let best = &results[0];
+        assert!(best.covered[0], "A at new[0] must be covered");
+        assert!(
+            !best.covered[1],
+            "X at new[1] must NOT be covered (gap interior)"
+        );
+        assert!(best.covered[2], "B at new[2] must be covered");
+        assert!(
+            (best.e_cost - 1.0).abs() < 1e-10,
+            "e_cost must be cost(X)=1.0"
+        );
+    }
+
+    #[test]
+    fn gap_too_wide_not_covered() {
+        // Pattern [A,B] gap(0,2), new=[A,X,Y,Z,B] → skip=3 > max=2 → B NOT covered
+        let new = vec![0u32, 1u32, 2u32, 3u32, 4u32]; // A=0, X=1, Y=2, Z=3, B=4
+        let p0 = gap_pattern(0, &[0u32, 4u32], 2);
+        let old_refs = vec![&p0];
+        let costs = vec![1.0; 5];
+        let results = beam_search(&new, &old_refs, 10, &costs);
+        let best = &results[0];
+        assert!(
+            !best.covered[4] || !best.covered[0],
+            "gap too wide: A+B must not both be covered together"
+        );
+        // At minimum B at new[4] must not be covered as part of the gap pattern
+        // since skip=3 exceeds max=2
+        assert!(best.e_cost > 0.0, "e_cost must be > 0 when gap is too wide");
+    }
+
+    #[test]
+    fn gap_wrong_order_not_covered() {
+        // Pattern [A,B] gap(0,2), new=[B,A] → wrong order, neither covered together
+        let new = vec![2u32, 0u32]; // B=2, A=0
+        let p0 = gap_pattern(0, &[0u32, 2u32], 2);
+        let old_refs = vec![&p0];
+        let costs = vec![1.0; 3];
+        let results = beam_search(&new, &old_refs, 10, &costs);
+        let best = &results[0];
+        // A at new[1] starts a fresh match (old_pos=0), B at new[0] can't follow
+        // So at most one of A/B is covered (A alone from a single-symbol perspective)
+        // But since pattern [A,B] has 2 symbols, both can't be matched out of order
+        assert!(best.e_cost > 0.0, "wrong order: e_cost must be > 0");
+    }
+
+    #[test]
+    fn match_log_records_events() {
+        // old = [[A, B]], new = [A, B] → match_log has 2 events
+        let new = vec![0u32, 1];
+        let p0 = contiguous_pattern(0, &[0u32, 1u32]);
+        let old_refs = vec![&p0];
+        let costs = vec![1.0, 2.0];
+        let results = beam_search(&new, &old_refs, 5, &costs);
+        let best = &results[0];
+        assert_eq!(best.match_log.len(), 2);
+        assert_eq!(best.match_log[0].new_pos, 0);
+        assert_eq!(best.match_log[1].new_pos, 1);
+        assert_eq!(best.match_log[0].old_pos, 0);
+        assert_eq!(best.match_log[1].old_pos, 1);
+    }
+
+    // Scenarios 1-7: integration-level beam correctness (migrated from tests/beam_correctness.rs)
+
+    fn best_result(new: &[u32], patterns: &[&Pattern], k: usize, costs: &[f64]) -> RawAlignment {
+        let mut results = beam_search(new, patterns, k, costs);
+        results.sort_by(|a, b| {
+            b.cd.partial_cmp(&a.cd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    let ac = a.covered.iter().filter(|&&c| c).count();
+                    let bc = b.covered.iter().filter(|&&c| c).count();
+                    bc.cmp(&ac)
+                })
+        });
+        results
+            .into_iter()
+            .next()
+            .expect("beam_search returned empty")
+    }
+
+    #[test]
+    fn scenario1_contiguous_exact_match() {
+        let new = vec![0u32, 1, 2];
+        let p0 = Pattern::new_contiguous(
+            0,
+            vec![SymbolRef::Atom(0), SymbolRef::Atom(1), SymbolRef::Atom(2)],
+            0,
+        );
+        let old = vec![&p0];
+        let costs = vec![1.0; 3];
+        let r = best_result(&new, &old, 10, &costs);
+        assert!(r.covered[0]);
+        assert!(r.covered[1]);
+        assert!(r.covered[2]);
+        assert_eq!(r.e_cost, 0.0);
+        assert_eq!(r.match_log.len(), 3);
+    }
+
+    #[test]
+    fn scenario2_contiguous_partial_match() {
+        let new = vec![0u32, 1, 2];
+        let p0 = Pattern::new_contiguous(0, vec![SymbolRef::Atom(0), SymbolRef::Atom(1)], 0);
+        let old = vec![&p0];
+        let costs = vec![1.0f64, 1.0, 2.0];
+        let r = best_result(&new, &old, 10, &costs);
+        assert!(r.covered[0]);
+        assert!(r.covered[1]);
+        assert!(!r.covered[2]);
+        assert!((r.e_cost - 2.0).abs() < 1e-10);
+        assert_eq!(r.match_log.len(), 2);
+    }
+
+    #[test]
+    fn scenario3_gap_match_within_window() {
+        let new = vec![0u32, 1, 2];
+        let p0 = Pattern::new_with_gaps(
+            0,
+            vec![SymbolRef::Atom(0), SymbolRef::Atom(2)],
+            vec![crate::model::GapConstraint::up_to(2)],
+            0,
+        );
+        let old = vec![&p0];
+        let costs = vec![1.0; 3];
+        let r = best_result(&new, &old, 10, &costs);
+        assert!(r.covered[0]);
+        assert!(!r.covered[1]);
+        assert!(r.covered[2]);
+        assert!((r.e_cost - 1.0).abs() < 1e-10);
+        assert_eq!(r.match_log.len(), 2);
+    }
+
+    #[test]
+    fn scenario4_gap_rejected_when_skip_exceeds_max() {
+        let new = vec![0u32, 1, 2, 3, 4];
+        let p0 = Pattern::new_with_gaps(
+            0,
+            vec![SymbolRef::Atom(0), SymbolRef::Atom(4)],
+            vec![crate::model::GapConstraint::up_to(2)],
+            0,
+        );
+        let old = vec![&p0];
+        let costs = vec![1.0; 5];
+        let r = best_result(&new, &old, 10, &costs);
+        assert!(!(r.covered[0] && r.covered[4]));
+    }
+
+    #[test]
+    fn scenario5_gap_wrong_order() {
+        let new = vec![2u32, 1, 0];
+        let p0 = Pattern::new_with_gaps(
+            0,
+            vec![SymbolRef::Atom(0), SymbolRef::Atom(2)],
+            vec![crate::model::GapConstraint::up_to(2)],
+            0,
+        );
+        let old = vec![&p0];
+        let costs = vec![1.0; 3];
+        let r = best_result(&new, &old, 10, &costs);
+        assert!(!(r.covered[0] && r.covered[2]));
+    }
+
+    #[test]
+    fn scenario6_two_non_overlapping_patterns() {
+        let new = vec![0u32, 1, 2, 3];
+        let p0 = Pattern::new_contiguous(0, vec![SymbolRef::Atom(0), SymbolRef::Atom(1)], 0);
+        let p1 = Pattern::new_contiguous(1, vec![SymbolRef::Atom(2), SymbolRef::Atom(3)], 0);
+        let old = vec![&p0, &p1];
+        let costs = vec![1.0; 4];
+        let r = best_result(&new, &old, 20, &costs);
+        assert_eq!(r.e_cost, 0.0);
+        assert!(r.covered.iter().all(|&c| c));
+        assert!(r.match_log.iter().any(|e| e.old_idx == 0));
+        assert!(r.match_log.iter().any(|e| e.old_idx == 1));
+    }
+
+    #[test]
+    fn scenario7_single_symbol_pattern_matches_twice() {
+        let new = vec![0u32, 1, 0];
+        let p0 = Pattern::new_contiguous(0, vec![SymbolRef::Atom(0)], 0);
+        let old = vec![&p0];
+        let costs = vec![1.0f64, 2.0];
+        let r = best_result(&new, &old, 10, &costs);
+        assert!(r.covered[0]);
+        assert!(!r.covered[1]);
+        assert!(r.covered[2]);
+        assert!((r.e_cost - 2.0).abs() < 1e-10);
+        assert_eq!(r.match_log.len(), 2);
     }
 }

@@ -319,17 +319,20 @@ pub struct InferResult {
     pub alignment: String,    // level-0 alignment (unchanged)
 
     // new — one entry per grammar level beyond 0
+    pub e_cost_base: f64,            // level-0 E cost (beam only, before higher levels)
     pub level_costs: Vec<f64>,       // e_cost per level: [l1, l2, l3, ...]
     pub level_alignments: Vec<String>, // alignment table per level
 }
 ```
 
-`e_cost` = `e_cost_l0 + level_costs.iter().sum()` — backward-compatible sum.
+`e_cost` = `e_cost_base + level_costs.iter().sum()` — backward-compatible sum.
+`e_cost_base` = level-0 beam E cost; exposed so callers can verify the decomposition exactly.
 `is_anomaly` = `e_cost > 0` — unchanged.
 `level_costs.is_empty()` when only level-0 grammar exists (current behaviour, no regression).
 
 Callers that only check `e_cost` and `is_anomaly` need no changes.
 Callers that want to know *which level* the anomaly comes from inspect `level_costs[i]`.
+Callers that want to verify the decomposition: `(e_cost - e_cost_base - level_costs.iter().sum()).abs() < 1e-9`.
 
 ### Level-2 alignment table
 
@@ -372,8 +375,8 @@ struct GrammarSnapshot {
 bincode handles it natively — no custom serializer needed. File format not
 backward-compatible (wire type of `Symbol::name` changes from `u32` to enum tag + u32).
 
-`load()` detects `format_version = 1` → fills `grammar_levels = vec![]`, restores
-`Symbol::name` as `SymbolRef::Atom(id)`. Old files load correctly, without higher levels.
+`format_version` is informational. Old files (v1) cannot be loaded — `Symbol::name`
+wire type changed from bare `u32` to discriminant + `u32`. Re-learn from source data.
 
 ## API surface
 
@@ -444,10 +447,13 @@ Level-2: new_patterns_l2 from training = [[pid(A,B), pid(C,D)]]×10
 
 4. `src/engine.rs`:
    - Add `GrammarLevel` struct.
-   - Add `grammar_levels: Vec<GrammarLevel>` and `max_levels: u8` to `SpmaEngine`.
+   - Add `grammar_levels: Vec<GrammarLevel>` and `max_levels_safety_cap: u8` to `SpmaEngine`.
+   - Add `Symbol::raw_id() -> u32` (returns inner u32 from either variant) — used everywhere `s.name` was used as a `u32` index.
    - Extract `learn_one_level()` from existing `learn()` body.
-   - Add `build_next_level_patterns()`.
-   - After level-0 convergence, run the N-level outer loop.
+   - Add `build_next_level_patterns()` (free function, not `&self`).
+   - Add `extract_frequent_ngrams_ids()` — n-gram miner variant that uses `raw_id()` instead of `interner.name()`, needed for pattern-ID sequences at level 1+.
+   - After level-0 convergence, save `level0_old = self.old_patterns.clone()` and `level0_new = self.new_patterns.clone()` before N-level loop; restore both after loop (because `learn_one_level` clears `self.old_patterns`/`self.new_patterns` as a side effect).
+   - Run the N-level outer loop.
 
 5. `src/lib.rs`:
    - `GrammarSnapshot`: add `format_version`, `grammar_levels: Vec<GrammarLevelSnapshot>`.

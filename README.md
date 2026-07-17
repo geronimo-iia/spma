@@ -1,85 +1,65 @@
 # spma
 
-Rust implementation of **SP Multiple Alignment (SPMA)** — a transparent pattern-matching engine for discrete sequential data.
+Unsupervised anomaly detection for discrete event sequences via MDL-based grammar induction (SP Multiple Alignment).
 
-SPMA originates from J G Wolff's SP Theory of Intelligence (1987–2006), a unifying framework grounded in the principle that cognition reduces to compression. The core operation is multiple alignment: matching a New pattern simultaneously against a grammar of Old patterns, minimising description length T = G + E. This implementation applies that mechanism narrowly to structured sequential data — no cognitive modeling, no numeric signals.
+Learns a hierarchical grammar from normal sequences, then scores new sequences by their encoding cost E. Sequences that compress poorly — high `e_norm` — are anomalous. Validated on LogHub HDFS achieving **F1 = 0.893** unsupervised (experiments repo, coming soon).
 
-**Status**: exploratory — built to understand whether SPMA is practically viable for anomaly detection. Not production-ready, not benchmarked on real data.
+## Background
 
-**Scope**: correct, auditable anomaly detection on event sequences. Not a general intelligence system. Not a competitor to neural approaches.
+I'm a software engineer, not an ML researcher. This started as a question: is there a symbolic, interpretable approach to anomaly detection that doesn't require neural networks, labeled data, or feature engineering?
 
-## What it does
+That question led me to [J.G. Wolff's SP theory](https://www.cognitionresearch.org) (1993–2019) — the idea that intelligence reduces to a single operation: find the best multiple alignment between new input and stored patterns, scored by information compression.
 
-Learns compressed grammars from sequential data, then aligns new inputs against the learned grammar:
-
-- `E > 0` → anomaly score (unmatched symbols cost bits)
-- Alignment table → localization (which symbols broke the pattern)
-- No post-hoc attribution needed — the alignment IS the explanation
-
-Scoring objective: **T = G + E** (MDL). G charged once at insertion, E = bit cost of unmatched New symbols.
-
-## CLI usage
-
-### Train
-
-```bash
-spma train normal_sequences.txt
-# saves ./spma_grammar.bin
-```
-
-```bash
-spma train normal_sequences.txt --grammar /path/to/custom.bin
-spma train --verbose normal_sequences.txt   # print alignment tables during training
-```
-
-### Infer
-
-```bash
-spma infer test_input.txt
-# loads ./spma_grammar.bin, prints OK/ANOMALY per line
-# exits 1 if any anomaly detected (E > 0)
-```
-
-```bash
-spma infer test_input.txt --grammar /path/to/custom.bin
-spma infer --verbose test_input.txt   # print full alignment tables
-```
-
-### Input format
-
-One sequence per line, space-separated symbols. Lines starting with `#` are ignored.
+The scoring objective is two-part MDL:
 
 ```
-TRIP_A BREAKER_OPEN UNDERVOLTAGE BACKUP_RELAY
-TRIP_B BREAKER_OPEN OVERCURRENT BACKUP_RELAY
-# this line is a comment
+T = G + E
 ```
 
-Special symbol prefixes:
+- **G**: grammar cost — size of what you know
+- **E**: encoding cost — cost of explaining new input using the grammar
+- High E = the grammar does not explain this input = anomaly
 
-| Prefix | Type | Example |
-|---|---|---|
-| `<` / `>` | Boundary markers | `< event >` |
-| `#` | Unique ID symbol | `#session_42` |
-| `!` | Identification symbol | `!admin` |
-| _(none)_ | Data symbol (default) | `BREAKER_OPEN` |
+I read the primary sources, found the math sound, found the empirical record thin, and decided to implement the core idea for the problem I actually had: discrete event sequences from industrial systems. This is exploration — I'm not claiming to advance the field, just curious enough to build something and see where it lands.
 
-## Library usage
+`spma` is that implementation. Not general AI — the anomaly detection subset: learn a grammar from normal sequences, score new sequences by E.
+
+Three properties transfer from SP theory:
+
+- **No catastrophic forgetting**: grammar is append-only — old patterns are never overwritten
+- **Structural transparency**: every inference produces an alignment table showing which patterns matched which events and at what cost — no post-hoc explanation needed
+- **One-trial learning**: a new pattern seen once is immediately a grammar entry
+
+## Install
+
+```toml
+[dependencies]
+spma = "0.1"
+```
+
+Or:
+
+```sh
+cargo add spma
+```
+
+## Usage
 
 ```rust
 use spma::Spma;
 
-let mut engine = Spma::new();
-engine.train(&[
-    vec!["TRIP_A", "BREAKER_OPEN", "UNDERVOLTAGE"],
-    vec!["TRIP_A", "BREAKER_OPEN", "OVERCURRENT"],
-])?;
-engine.save("grammar.bin")?;
+// Train on normal sequences
+let corpus: Vec<Vec<&str>> = vec![
+    vec!["TRIP", "BREAKER_OPEN", "UNDERVOLTAGE", "BACKUP_RELAY"],
+    vec!["TRIP", "BREAKER_OPEN", "OVERCURRENT",  "BACKUP_RELAY"],
+    // ... more normal sequences
+];
+let mut model = Spma::new(10); // beam width = 10
+model.train(&corpus);
 
-let engine = Spma::load("grammar.bin")?;
-let result = engine.infer(&["TRIP_A", "BREAKER_OPEN", "UNDERVOLTAGE"])?;
-
-println!("E={:.3}  CD={:+.3}  anomaly={}", result.e_cost, result.cd, result.is_anomaly);
+// Infer a new sequence
+let result = model.infer(&["TRIP", "BREAKER_OPEN", "UNDERVOLTAGE", "BACKUP_RELAY"]);
+println!("e_norm={:.3}  anomaly={}", result.e_norm, result.is_anomaly);
 println!("{}", result.alignment);
 ```
 
@@ -87,87 +67,91 @@ println!("{}", result.alignment);
 
 | Field | Type | Meaning |
 |---|---|---|
-| `e_cost` | `f64` | Encoding cost of unmatched symbols (E in T=G+E) |
+| `e_cost` | `f64` | Encoding cost of unmatched symbols (bits) |
+| `e_norm` | `f64` | E normalised by raw sequence cost; 0 = fully covered |
+| `is_anomaly` | `bool` | `true` when `e_norm > threshold` (default: any uncovered symbol) |
+| `anomaly_percentile` | `f64` | Fraction of training sequences with lower `e_norm` |
 | `cd` | `f64` | Compression difference; positive = grammar compresses the sequence |
-| `is_anomaly` | `bool` | `true` when `e_cost > 0` |
-| `unmatched` | `Vec<String>` | Symbol names not covered by any grammar pattern |
-| `alignment` | `String` | Human-readable alignment table |
+| `level_costs` | `Vec<f64>` | Encoding cost per grammar level |
+| `level_e_norms` | `Vec<f64>` | Normalised cost per grammar level |
+| `alignment` | `Alignment` | Match table — which grammar patterns covered which symbols |
+
+## Persist a model
+
+```rust
+use std::io::{BufWriter, BufReader};
+use std::fs::File;
+
+// inside a Result-returning function
+model.save(BufWriter::new(File::create("model.json")?))?;
+let loaded = Spma::load(BufReader::new(File::open("model.json")?))?;
+```
+
+## Recalibrate thresholds
+
+```rust
+// Refit e_distribution on a larger normal corpus without retraining the grammar.
+// Useful when you train on a small corpus for speed then collect more normal data.
+let new_corpus: Vec<Vec<&str>> = vec![
+    vec!["TRIP", "BREAKER_OPEN", "UNDERVOLTAGE", "BACKUP_RELAY"],
+    // ... more normal sequences
+];
+model.recalibrate(&new_corpus);
+```
 
 ## Examples
 
-```bash
-cargo run --example fault_detection
-cargo run --example ordered_sequences
+Runnable examples covering golden path, save/load, order detection, and threshold tuning — see [examples/README.md](examples/README.md).
+
+## CLI quickstart
+
+```sh
+# Train
+spma train --corpus normal.txt --output model.json
+
+# Infer (exits 1 if any sequence is anomalous)
+spma infer --model model.json --input sequences.txt
+spma infer --model model.json --json < sequences.txt
+
+# Refit e_distribution without re-training
+spma recalibrate --model model.json --corpus new_normal.txt
+
+# Inspect grammar
+spma grammar --model model.json
+spma grammar --model model.json --json --level 0
 ```
 
-`examples/fault_detection.rs` — trains on normal industrial fault sequences, saves grammar, loads it, then classifies a set of test inputs including unknown fault types and novel event streams.
-
-`examples/ordered_sequences.rs` — demonstrates what the engine can and cannot detect: unknown symbols (always flagged), order violations (detected with homogeneous corpus; weaker with varied corpus), missing/extra symbols, and known zero-cost limitations.
-
-## Use cases
-
-Industrial log anomaly detection (learn normal sequences, flag high-E inputs), protocol conformance checking (align captured traffic against spec patterns), and fault code classification (one grammar per class, pick minimum T). In all cases the alignment table is the explanation — no post-hoc attribution.
-
-**Known limitations**: see [docs/known-issues.md](docs/known-issues.md) for full details.
-- Order violations: detected when grammar patterns span the full sequence (homogeneous corpus). Multi-pattern stitching can still cover full-sequence reorderings when the grammar is varied — see Issue #5 for two documented fix strategies.
-- Boundary markers (`<` / `>`) do not improve order detection — ubiquitous in every sequence → Shannon cost ≈ 0 → no anomaly signal.
-- Zero-cost symbols at inference: resolved (Issue #4). Symbols in training corpus but not absorbed into grammar now fall back to corpus Shannon costs; uncovered symbols contribute E > 0.
-
-## Features
-
-| Feature | Location | Notes |
-|---|---|---|
-| String interning (symbol → u32 ID) | `src/intern.rs` | O(1) symbol comparison |
-| Shannon bit costs | `src/engine.rs` | `-log2(freq/total)`, no distortion |
-| T=G+E scoring | `src/lib.rs` | G charged once at insertion |
-| Staged beam search (SPMA core) | `src/beam.rs` | Monotonicity + span contiguity + inter-pattern ordering |
-| Learning loop with MDL gate | `src/engine.rs` | n-gram bootstrap + beam-driven extraction |
-| Grammar-stability convergence | `src/engine.rs` | Terminates on `old_grew \|\| added_this_cycle` |
-| One-trial learning | `src/engine.rs` | Add-only store, no forgetting |
-| Corpus costs fallback | `src/engine.rs` + `src/lib.rs` | Known-but-rare symbols get non-zero E |
-| Alignment table printer | `src/engine.rs` | Per-symbol coverage display |
-| Unknown symbol detection | `src/lib.rs` | Symbols absent from training → forced E > 0 |
-| Grammar persistence | `src/lib.rs` | serde + bincode; includes corpus_costs |
-
-## Architecture
+Input format: one sequence per line, tokens space-separated.
 
 ```
-CLI (main.rs)
-       ↓
-Spma API (lib.rs)
-       ↓
-Learning loop (engine.rs)
-       ↓
-Beam search (beam.rs)
-       ↓
-T=G+E scoring (model.rs)
-       ↓
-String interning: symbol → u32 (intern.rs)
+TRIP BREAKER_OPEN UNDERVOLTAGE BACKUP_RELAY
+TRIP BREAKER_OPEN OVERCURRENT  BACKUP_RELAY
 ```
 
-Key decisions — see [docs/architecture.md](docs/architecture.md):
-- G charged once at insertion (not per alignment — otherwise CD ≈ 0, learning signal vanishes)
-- Monotonicity constraint in beam search (Old patterns advance forward only)
-- Multi-pattern simultaneous alignment (not pairwise — cross-pattern coverage drives compression gain)
-- Shannon bit costs: `cost(s) = -log2(freq/total)`, no tunable distortion factor
+### Per-level anomaly gates
 
-## Docs
+Flag sequences that look normal at the atom level but violate higher-level composition — e.g. correct events in wrong order.
 
-| File | Content |
-|---|---|
-| [docs/architecture.md](docs/architecture.md) | Scoring rationale, beam search, learning loop |
-| [docs/known-issues.md](docs/known-issues.md) | Open issues, confirmed theory deviations, fix strategies |
-| [docs/hierarchical-grammar-design.md](docs/hierarchical-grammar-design.md) | Fix B implementation design: level-2 grammar, `SymbolRef`, l2 inference |
-| [docs/performance.md](docs/performance.md) | Possible improvements (only Phase A implemented) |
+```sh
+spma infer --model model.json --level-threshold 0:0.2 --level-threshold 1:0.5
+```
 
-## Limitations
+## How it works
 
-- No numeric representation (Wolff acknowledged this gap; no solution exists)
-- No 2D patterns, probabilistic inference, or cognitive modeling
-- Not validated on real data yet
-- Order violations: partially detectable (span contiguity + inter-pattern ordering enforced at beam level); full-sequence reorderings via multi-pattern stitching remain undetected — see [docs/known-issues.md](docs/known-issues.md) Issue #5 for two documented fix strategies
-- Performance cap ~1k patterns before Phases B–F (inverted index, parallel beam) are implemented
+1. **Train**: extracts frequent n-grams, then runs MDL-gated beam search to build a hierarchical grammar of patterns.
+2. **Infer**: aligns the new sequence against the grammar; symbols not covered by any pattern contribute their Shannon bit cost to E.
+3. **Score**: `e_norm = E / raw_cost`. 0 = all symbols covered by known patterns. 1 = nothing matched.
 
-## References
+Scoring objective: **T = G + E** (MDL). G is charged once per pattern per insertion; E is the residual encoding cost.
 
-- J G Wolff, SP Theory: https://www.cognitionresearch.org/sp.htm
+## Documentation
+
+- [Architecture](docs/architecture.md) — scoring objective, beam search, learning loop
+- [Grammar model](docs/grammar-spec.md) — data model, GapConstraint, what was excluded and why
+- [Scoring](docs/scoring.md) — E_norm, threshold semantics, per-level calibration
+- [Performance](docs/performance.md) — current optimisations and improvement roadmap
+- [Known limitations](docs/known-limitations.md) — what the current implementation cannot do
+
+## Benchmark results
+
+Full results including HDFS LogHub evaluation (F1 = 0.893, unsupervised, no labeled data used during training) — experiments repo coming soon.

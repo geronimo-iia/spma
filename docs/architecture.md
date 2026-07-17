@@ -50,9 +50,11 @@ Implemented in `src/beam.rs`. One New pattern aligned against all Old patterns s
 
 **Monotonicity constraint**: each Old pattern can only advance forward within its own symbol sequence. No symbol in an Old pattern is matched at a position earlier than its previous match in that pattern.
 
-**Span contiguity constraint** (`new_cursors`): when advancing to the next symbol of a multi-symbol Old pattern, the next New position must be exactly `prev_new + 1`. A pattern `[A, B]` can only match `A B` as a contiguous block, not `A ... B` with a gap. The first symbol of a pattern can start at any New position. (Resolves Issue #3.)
+**Span contiguity / gap constraint** (`new_cursors`): when advancing to the next symbol of an Old pattern, the default is exactly `prev_new + 1`. If the pattern has a `GapConstraint` at that position (`Pattern::gaps[old_pos-1]`), the beam allows `skip` New positions in `[min, max]` instead. Skipped positions are uncovered (contribute to E). The first symbol of a pattern can start at any New position.
 
-**Inter-pattern ordering constraint** (`max_covered_new`): the first symbol of a new Old pattern (not yet started in this alignment) must begin at a New position `>= max_covered_new`. This prevents a second pattern from starting at a New position already behind the current frontier. Prevents mid-stream interleaving; does not detect full-sequence reorderings — see [docs/known-issues.md](known-issues.md) Issue #5.
+**Inter-pattern ordering constraint** (`max_covered_new`): the first symbol of a new Old pattern must begin at a New position `>= max_covered_new`. Prevents mid-stream interleaving; does not detect full-sequence reorderings — see [docs/known-limitations.md](known-limitations.md).
+
+**Match log / MatchArena**: beam search owns a `MatchArena` (flat `Vec<MatchNode>` linked list). Each `PartialAlignment` holds a single `u32` tail index rather than a cloned `Vec<MatchEvent>`. Forking copies one `u32`. After beam completion, `arena.collect(winning.log_tail)` walks the linked list once to reconstruct all match events for the winning alignment.
 
 **Why not pairwise**: the original implementation matched New against one Old pattern at a time and merged results. This is wrong — SPMA's compression gain comes from using multiple Old patterns to cover different spans of New simultaneously. Pairwise alignment misses cross-pattern coverage and systematically underestimates CD.
 
@@ -101,13 +103,11 @@ spma infer --grammar /path/custom.bin anomaly.txt
 
 Grammar persistence: serde + bincode serialisation of the Old pattern store. `GrammarSnapshot` includes `old_patterns`, `interner_names`, and `corpus_costs`. On load, `original_alphabet` is populated from all interned names.
 
-## Planned: hierarchical grammar (level-2 patterns)
+## Hierarchical grammar (N-level)
 
-The current engine is level-1 only. For full SP-theory compliance and inter-pattern
-ordering detection, a level-2 grammar layer is designed but not yet implemented.
-See [docs/hierarchical-grammar-design.md](hierarchical-grammar-design.md) for the
-concrete implementation plan: `SymbolRef` enum, level-2 learning pass, level-2
-beam inference, `e_cost_l2` in `InferResult`, and persistence changes.
+Implemented. The engine runs N levels: level-0 induces atom patterns; level-k induces patterns over level-(k-1) pattern IDs. `SymbolRef::Pattern(pid)` references a lower-level pattern. `InferResult::level_e_norms` gives per-level normalized E. See [docs/grammar-spec.md](grammar-spec.md) for the data model.
+
+E_norm is the primary anomaly signal: `E / raw_new_cost`, range [0.0, 1.0]. See [docs/scoring.md](scoring.md).
 
 ## Test organisation
 

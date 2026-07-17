@@ -2,24 +2,29 @@
 name = "spma"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75"
+description = "Unsupervised anomaly detection for discrete event sequences via MDL-based grammar induction (SP Multiple Alignment)"
 license = "MIT OR Apache-2.0"
+authors = ["Jerome Guibert"]
+repository = "https://github.com/geronimo-iia/spma"
+keywords = ["anomaly-detection", "grammar-induction", "log-analysis", "mdl", "beam-search"]
+categories = ["algorithms", "science"]
 
 [lib]
 name = "spma"
 path = "src/lib.rs"
 
-[[bin]]
-name = "spma"
-path = "src/main.rs"
-
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-bincode = "=1.3.3"
-clap = { version = "4.0", features = ["derive"] }
+serde_json = "1.0"
 anyhow = "1.0"
-thiserror = "2.0"
-indexmap = "2.0"
-itertools = "0.15"
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
+mimalloc = { version = "0.1", default-features = false }
+
+[[bin]]
+name = "spma"
+path = "src/bin/spma.rs"
 
 [dev-dependencies]
 

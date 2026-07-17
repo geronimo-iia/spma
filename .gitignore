@@ -4,3 +4,5 @@ Cargo.lock
 *.bin
 *.csv
 .worktrees/
+src_old/
+tests_old/
