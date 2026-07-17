@@ -136,17 +136,11 @@ impl Pattern {
 pub struct GrammarLevel {
     /// Patterns induced at this level.
     pub patterns: Vec<Pattern>,
-    /// E_norm of each training sequence at this level, used for calibration.
-    /// Populated after training converges (Phase 1e).
-    pub corpus_e_norms: Vec<f64>,
 }
 
 impl GrammarLevel {
     pub fn new(patterns: Vec<Pattern>) -> Self {
-        Self {
-            patterns,
-            corpus_e_norms: Vec::new(),
-        }
+        Self { patterns }
     }
 }
 
