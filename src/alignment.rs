@@ -208,7 +208,9 @@ impl fmt::Display for Alignment {
         write!(
             f,
             "---\nE: {:.1} bits   CD: {:.1} bits   T: {:.1} bits",
-            self.e_cost, self.cd, self.e_cost + self.cd
+            self.e_cost,
+            self.cd,
+            self.e_cost + self.cd
         )
     }
 }
@@ -345,8 +347,18 @@ mod tests {
 
         let raw = RawAlignment {
             match_log: vec![
-                MatchEvent { old_idx: 0, old_pos: 0, new_pos: 0, cost: 1.0 },
-                MatchEvent { old_idx: 0, old_pos: 1, new_pos: 2, cost: 1.0 },
+                MatchEvent {
+                    old_idx: 0,
+                    old_pos: 0,
+                    new_pos: 0,
+                    cost: 1.0,
+                },
+                MatchEvent {
+                    old_idx: 0,
+                    old_pos: 1,
+                    new_pos: 2,
+                    cost: 1.0,
+                },
             ],
             covered: vec![true, false, true],
             e_cost: 1.0,
@@ -384,7 +396,8 @@ mod tests {
         let results = beam_search(&new, &old_refs, 20, &costs);
         let alignment = build_alignment(&results[0], &["A", "B", "C", "D"], &old_refs, &grammar);
         assert_eq!(alignment.rows.len(), 2);
-        let ids_used: std::collections::HashSet<u32> = alignment.rows.iter().map(|r| r.pattern_id).collect();
+        let ids_used: std::collections::HashSet<u32> =
+            alignment.rows.iter().map(|r| r.pattern_id).collect();
         assert_eq!(ids_used.len(), 2);
     }
 
@@ -395,12 +408,27 @@ mod tests {
         let b_id = interner.intern("B");
         let _ = interner.intern("X");
         let grammar = Grammar::new(interner);
-        let p0 = Pattern::new_with_gaps(0, vec![SymbolRef::Atom(a_id), SymbolRef::Atom(b_id)], vec![GapConstraint::up_to(2)], 0);
+        let p0 = Pattern::new_with_gaps(
+            0,
+            vec![SymbolRef::Atom(a_id), SymbolRef::Atom(b_id)],
+            vec![GapConstraint::up_to(2)],
+            0,
+        );
         let old_refs = vec![&p0];
         let raw = RawAlignment {
             match_log: vec![
-                MatchEvent { old_idx: 0, old_pos: 0, new_pos: 0, cost: 1.0 },
-                MatchEvent { old_idx: 0, old_pos: 1, new_pos: 2, cost: 1.0 },
+                MatchEvent {
+                    old_idx: 0,
+                    old_pos: 0,
+                    new_pos: 0,
+                    cost: 1.0,
+                },
+                MatchEvent {
+                    old_idx: 0,
+                    old_pos: 1,
+                    new_pos: 2,
+                    cost: 1.0,
+                },
             ],
             covered: vec![true, false, true],
             e_cost: 1.0,
@@ -423,25 +451,45 @@ mod tests {
     fn scenario10_fully_matched_true_and_false() {
         let (grammar, ids) = make_grammar(&["A", "B", "C"]);
         let (a, b, c) = (ids[0], ids[1], ids[2]);
-        let p0 = Pattern::new_contiguous(0, vec![SymbolRef::Atom(a), SymbolRef::Atom(b), SymbolRef::Atom(c)], 0);
+        let p0 = Pattern::new_contiguous(
+            0,
+            vec![SymbolRef::Atom(a), SymbolRef::Atom(b), SymbolRef::Atom(c)],
+            0,
+        );
         let costs = vec![1.0; 3];
         let new = vec![a, b, c];
         let old_refs = vec![&p0];
         let results = beam_search(&new, &old_refs, 10, &costs);
         let alignment = build_alignment(&results[0], &["A", "B", "C"], &old_refs, &grammar);
-        assert!(alignment.rows[0].fully_matched, "all 3 matched → fully_matched true");
+        assert!(
+            alignment.rows[0].fully_matched,
+            "all 3 matched → fully_matched true"
+        );
 
         let raw_partial = RawAlignment {
             match_log: vec![
-                MatchEvent { old_idx: 0, old_pos: 0, new_pos: 0, cost: 1.0 },
-                MatchEvent { old_idx: 0, old_pos: 1, new_pos: 1, cost: 1.0 },
+                MatchEvent {
+                    old_idx: 0,
+                    old_pos: 0,
+                    new_pos: 0,
+                    cost: 1.0,
+                },
+                MatchEvent {
+                    old_idx: 0,
+                    old_pos: 1,
+                    new_pos: 1,
+                    cost: 1.0,
+                },
             ],
             covered: vec![true, true, false],
             e_cost: 1.0,
             cd: 2.0,
         };
         let alignment2 = build_alignment(&raw_partial, &["A", "B", "C"], &old_refs, &grammar);
-        assert!(!alignment2.rows[0].fully_matched, "only 2 of 3 matched → fully_matched false");
+        assert!(
+            !alignment2.rows[0].fully_matched,
+            "only 2 of 3 matched → fully_matched false"
+        );
     }
 
     #[test]
@@ -455,7 +503,12 @@ mod tests {
         let p0 = Pattern::new_contiguous(0, vec![SymbolRef::Atom(a), SymbolRef::Atom(c)], 0);
         let old_refs = vec![&p0];
         let raw = RawAlignment {
-            match_log: vec![MatchEvent { old_idx: 0, old_pos: 0, new_pos: 0, cost: 1.0 }],
+            match_log: vec![MatchEvent {
+                old_idx: 0,
+                old_pos: 0,
+                new_pos: 0,
+                cost: 1.0,
+            }],
             covered: vec![true, false, false, false],
             e_cost: 3.0,
             cd: 1.0,
@@ -489,7 +542,14 @@ mod tests {
         assert!(s.contains("E:"));
         assert!(s.contains("CD:"));
         assert!(s.contains("T:"));
-        let empty = Alignment { new_symbols: vec!["X".to_string()], rows: vec![], covered: vec![false], e_cost: 1.0, cd: 0.0, level_costs: vec![] };
+        let empty = Alignment {
+            new_symbols: vec!["X".to_string()],
+            rows: vec![],
+            covered: vec![false],
+            e_cost: 1.0,
+            cd: 0.0,
+            level_costs: vec![],
+        };
         let _ = empty.to_string();
     }
 

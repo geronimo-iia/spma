@@ -474,13 +474,20 @@ mod tests {
                     bc.cmp(&ac)
                 })
         });
-        results.into_iter().next().expect("beam_search returned empty")
+        results
+            .into_iter()
+            .next()
+            .expect("beam_search returned empty")
     }
 
     #[test]
     fn scenario1_contiguous_exact_match() {
         let new = vec![0u32, 1, 2];
-        let p0 = Pattern::new_contiguous(0, vec![SymbolRef::Atom(0), SymbolRef::Atom(1), SymbolRef::Atom(2)], 0);
+        let p0 = Pattern::new_contiguous(
+            0,
+            vec![SymbolRef::Atom(0), SymbolRef::Atom(1), SymbolRef::Atom(2)],
+            0,
+        );
         let old = vec![&p0];
         let costs = vec![1.0; 3];
         let r = best_result(&new, &old, 10, &costs);
@@ -508,7 +515,12 @@ mod tests {
     #[test]
     fn scenario3_gap_match_within_window() {
         let new = vec![0u32, 1, 2];
-        let p0 = Pattern::new_with_gaps(0, vec![SymbolRef::Atom(0), SymbolRef::Atom(2)], vec![crate::model::GapConstraint::up_to(2)], 0);
+        let p0 = Pattern::new_with_gaps(
+            0,
+            vec![SymbolRef::Atom(0), SymbolRef::Atom(2)],
+            vec![crate::model::GapConstraint::up_to(2)],
+            0,
+        );
         let old = vec![&p0];
         let costs = vec![1.0; 3];
         let r = best_result(&new, &old, 10, &costs);
@@ -522,7 +534,12 @@ mod tests {
     #[test]
     fn scenario4_gap_rejected_when_skip_exceeds_max() {
         let new = vec![0u32, 1, 2, 3, 4];
-        let p0 = Pattern::new_with_gaps(0, vec![SymbolRef::Atom(0), SymbolRef::Atom(4)], vec![crate::model::GapConstraint::up_to(2)], 0);
+        let p0 = Pattern::new_with_gaps(
+            0,
+            vec![SymbolRef::Atom(0), SymbolRef::Atom(4)],
+            vec![crate::model::GapConstraint::up_to(2)],
+            0,
+        );
         let old = vec![&p0];
         let costs = vec![1.0; 5];
         let r = best_result(&new, &old, 10, &costs);
@@ -532,7 +549,12 @@ mod tests {
     #[test]
     fn scenario5_gap_wrong_order() {
         let new = vec![2u32, 1, 0];
-        let p0 = Pattern::new_with_gaps(0, vec![SymbolRef::Atom(0), SymbolRef::Atom(2)], vec![crate::model::GapConstraint::up_to(2)], 0);
+        let p0 = Pattern::new_with_gaps(
+            0,
+            vec![SymbolRef::Atom(0), SymbolRef::Atom(2)],
+            vec![crate::model::GapConstraint::up_to(2)],
+            0,
+        );
         let old = vec![&p0];
         let costs = vec![1.0; 3];
         let r = best_result(&new, &old, 10, &costs);

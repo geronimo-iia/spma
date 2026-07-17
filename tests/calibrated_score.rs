@@ -188,7 +188,10 @@ fn per_level_threshold_fallback_to_global() {
         "level_thresholds must be empty after train"
     );
     let result = spma.infer(&["A", "B", "C"]);
-    assert!(!result.is_anomaly, "known seq with empty level_thresholds must not be anomaly");
+    assert!(
+        !result.is_anomaly,
+        "known seq with empty level_thresholds must not be anomaly"
+    );
 
     // set_level_threshold extends vec correctly
     spma.set_level_threshold(2, 0.5);

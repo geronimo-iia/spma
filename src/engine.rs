@@ -73,11 +73,11 @@ impl Spma {
     }
 
     pub fn save<W: IoWrite>(&self, writer: W) -> io::Result<()> {
-        serde_json::to_writer(writer, self).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        serde_json::to_writer(writer, self).map_err(io::Error::other)
     }
 
     pub fn load<R: IoRead>(reader: R) -> io::Result<Self> {
-        serde_json::from_reader(reader).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        serde_json::from_reader(reader).map_err(io::Error::other)
     }
 
     pub fn train(&mut self, corpus: &[Vec<&str>]) {
@@ -621,7 +621,11 @@ impl Spma {
         let dist = &self.grammar.e_distribution;
         let is_anomaly_level0 = e_norm > dist.threshold;
         let is_anomaly_levels = level_e_norms.iter().enumerate().any(|(lvl, &lvl_e)| {
-            let t = dist.level_thresholds.get(lvl).copied().unwrap_or(f64::INFINITY);
+            let t = dist
+                .level_thresholds
+                .get(lvl)
+                .copied()
+                .unwrap_or(f64::INFINITY);
             lvl_e > t
         });
         let is_anomaly = is_anomaly_level0 || is_anomaly_levels;
@@ -1188,17 +1192,38 @@ mod tests {
         let mut spma = Spma::new(5);
         spma.train(&corpus);
 
-        let levels_before: Vec<usize> = spma.grammar.levels.iter().map(|l| l.patterns.len()).collect();
+        let levels_before: Vec<usize> = spma
+            .grammar
+            .levels
+            .iter()
+            .map(|l| l.patterns.len())
+            .collect();
         let atom_costs_before = spma.atom_costs.clone();
         let interner_len_before = spma.grammar.interner.len();
 
-        let corpus_refs: Vec<Vec<&str>> = corpus.iter().map(|s| s.iter().copied().collect()).collect();
+        let corpus_refs: Vec<Vec<&str>> =
+            corpus.iter().map(|s| s.iter().copied().collect()).collect();
         spma.recalibrate(&corpus_refs);
 
-        let levels_after: Vec<usize> = spma.grammar.levels.iter().map(|l| l.patterns.len()).collect();
-        assert_eq!(levels_before, levels_after, "grammar levels must not change");
-        assert_eq!(atom_costs_before, spma.atom_costs, "atom_costs must not change");
-        assert_eq!(interner_len_before, spma.grammar.interner.len(), "interner must not change");
+        let levels_after: Vec<usize> = spma
+            .grammar
+            .levels
+            .iter()
+            .map(|l| l.patterns.len())
+            .collect();
+        assert_eq!(
+            levels_before, levels_after,
+            "grammar levels must not change"
+        );
+        assert_eq!(
+            atom_costs_before, spma.atom_costs,
+            "atom_costs must not change"
+        );
+        assert_eq!(
+            interner_len_before,
+            spma.grammar.interner.len(),
+            "interner must not change"
+        );
 
         assert!(
             spma.grammar.e_distribution.sorted_e_norms_len_for_test() > 0,
@@ -1222,7 +1247,8 @@ mod tests {
         let reduced_count = spma.grammar.levels[0].patterns.len();
         assert_eq!(reduced_count, original_count - 1);
 
-        let corpus_refs: Vec<Vec<&str>> = corpus.iter().map(|s| s.iter().copied().collect()).collect();
+        let corpus_refs: Vec<Vec<&str>> =
+            corpus.iter().map(|s| s.iter().copied().collect()).collect();
         spma.recalibrate(&corpus_refs);
 
         assert_eq!(

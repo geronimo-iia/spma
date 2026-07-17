@@ -87,7 +87,10 @@ fn main() {
     for (label, seq) in &cases {
         let r = engine.infer(seq);
         let tag = if r.is_anomaly { "ANOMALY" } else { "OK     " };
-        println!("[{tag}]  e_norm={:.3}  E={:.3}  CD={:+.3}  — {label}", r.e_norm, r.e_cost, r.cd);
+        println!(
+            "[{tag}]  e_norm={:.3}  E={:.3}  CD={:+.3}  — {label}",
+            r.e_norm, r.e_cost, r.cd
+        );
         let unmatched = r.alignment.unmatched_symbols();
         if !unmatched.is_empty() {
             println!("         unmatched: {}", unmatched.join(", "));
@@ -131,7 +134,10 @@ fn main() {
     for (label, seq) in &cases2 {
         let r = engine2.infer(seq);
         let tag = if r.is_anomaly { "ANOMALY" } else { "OK     " };
-        println!("[{tag}]  e_norm={:.3}  E={:.3}  CD={:+.3}  — {label}", r.e_norm, r.e_cost, r.cd);
+        println!(
+            "[{tag}]  e_norm={:.3}  E={:.3}  CD={:+.3}  — {label}",
+            r.e_norm, r.e_cost, r.cd
+        );
         let unmatched = r.alignment.unmatched_symbols();
         if !unmatched.is_empty() {
             println!("         unmatched: {}", unmatched.join(", "));

@@ -32,8 +32,14 @@ fn main() -> std::io::Result<()> {
     let r_orig = model.infer(seq);
     let r_load = loaded.infer(seq);
 
-    println!("\nOriginal: e_norm={:.3}  anomaly={}", r_orig.e_norm, r_orig.is_anomaly);
-    println!("Loaded:   e_norm={:.3}  anomaly={}", r_load.e_norm, r_load.is_anomaly);
+    println!(
+        "\nOriginal: e_norm={:.3}  anomaly={}",
+        r_orig.e_norm, r_orig.is_anomaly
+    );
+    println!(
+        "Loaded:   e_norm={:.3}  anomaly={}",
+        r_load.e_norm, r_load.is_anomaly
+    );
 
     assert_eq!(r_orig.is_anomaly, r_load.is_anomaly);
     assert!((r_orig.e_norm - r_load.e_norm).abs() < 1e-10);

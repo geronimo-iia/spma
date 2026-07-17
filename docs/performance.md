@@ -45,6 +45,9 @@ AVX2: 8 `u32` symbols per instruction. Only after B+C are done.
 **F — Arena allocator for beam candidates** *(profile first)*
 `bumpalo` arena for short-lived `PartialAlignment` structs. Only relevant at beam_k > 50.
 
+**G — Redundant level-0 beam search in infer**
+`infer` runs `beam_search` on level-0 patterns twice: once before the N-level loop (for alignment/e_cost), once inside the loop at `level=1` (to extract the pid sequence for level-1 input). Inputs are identical so results are identical — pure wasted work. Fix: reuse `best_raw.match_log` from the first call to extract pid sequence directly, skipping the second beam run.
+
 ## Order
 
-B → C → D → E → F. Establish `cargo bench` baseline before B.
+B → C → D → E → F → G. Establish `cargo bench` baseline before B.

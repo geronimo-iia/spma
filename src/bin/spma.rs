@@ -126,7 +126,6 @@ fn read_corpus(path: &str) -> Result<Vec<Vec<String>>> {
     Ok(corpus)
 }
 
-
 fn quantile_of(sorted: &[f64], q: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
@@ -284,7 +283,11 @@ fn print_grammar_human(
 
     // E_norm distribution table
     writeln!(out, "E_norm distribution per level (training):")?;
-    writeln!(out, "  {:>5}  {:>6}  {:>7}  {:>7}  {:>7}  {:>7}", "level", "n", "p50", "p90", "p99", "max")?;
+    writeln!(
+        out,
+        "  {:>5}  {:>6}  {:>7}  {:>7}  {:>7}  {:>7}",
+        "level", "n", "p50", "p90", "p99", "max"
+    )?;
     for (li, sorted) in dist.level_sorted_e_norms.iter().enumerate() {
         if level_filter.is_some() && level_filter != Some(li) {
             continue;
@@ -294,7 +297,11 @@ fn print_grammar_human(
         let p90 = quantile_of(sorted, 0.90);
         let p99 = quantile_of(sorted, 0.99);
         let max = sorted.last().copied().unwrap_or(0.0);
-        writeln!(out, "  {:>5}  {:>6}  {:>7.4}  {:>7.4}  {:>7.4}  {:>7.4}", li, n, p50, p90, p99, max)?;
+        writeln!(
+            out,
+            "  {:>5}  {:>6}  {:>7.4}  {:>7.4}  {:>7.4}  {:>7.4}",
+            li, n, p50, p90, p99, max
+        )?;
     }
 
     Ok(())
