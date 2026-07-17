@@ -1247,19 +1247,21 @@ mod tests {
         spma.train(&corpus);
 
         let original_count = spma.grammar.levels[0].patterns.len();
-        if original_count > 1 {
-            spma.grammar.levels[0].patterns.pop();
-            let reduced_count = spma.grammar.levels[0].patterns.len();
-            assert_eq!(reduced_count, original_count - 1);
+        assert!(
+            original_count > 1,
+            "test setup: need >1 patterns at level 0, got {original_count}"
+        );
+        spma.grammar.levels[0].patterns.pop();
+        let reduced_count = spma.grammar.levels[0].patterns.len();
+        assert_eq!(reduced_count, original_count - 1);
 
-            let corpus_refs: Vec<Vec<&str>> = corpus.iter().map(|s| s.iter().copied().collect()).collect();
-            spma.recalibrate(&corpus_refs);
+        let corpus_refs: Vec<Vec<&str>> = corpus.iter().map(|s| s.iter().copied().collect()).collect();
+        spma.recalibrate(&corpus_refs);
 
-            assert_eq!(
-                spma.grammar.levels[0].patterns.len(),
-                reduced_count,
-                "recalibrate must not re-add removed patterns"
-            );
-        }
+        assert_eq!(
+            spma.grammar.levels[0].patterns.len(),
+            reduced_count,
+            "recalibrate must not re-add removed patterns"
+        );
     }
 }
