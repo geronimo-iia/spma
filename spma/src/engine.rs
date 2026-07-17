@@ -522,7 +522,9 @@ impl Spma {
             // Push new level on cold start, extend existing on incremental
             let next_level = level + 1;
             if next_level < self.grammar.levels.len() {
-                self.grammar.levels[next_level].patterns.extend(accepted_pats);
+                self.grammar.levels[next_level]
+                    .patterns
+                    .extend(accepted_pats);
             } else {
                 self.grammar.levels.push(GrammarLevel::new(accepted_pats));
             }
