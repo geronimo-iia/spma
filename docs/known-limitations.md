@@ -32,4 +32,4 @@ consistent ordering if ordering matters for your use case.
 On the HDFS benchmark, F1=0.893 is the unsupervised ceiling. 92% of false
 positives are caused by 5 rare atoms (E6, E16, E18, E25, E28) that also drive
 34% of true positives — they cannot be neutralized without anomaly labels.
-See `spma-experiments/hdfs-validation/METHOD.md` for the full FP analysis.
+See [spma-experiments/hdfs-validation/METHOD.md](https://github.com/geronimo-iia/spma-experiments/blob/main/hdfs-validation/METHOD.md) for the full FP analysis.
