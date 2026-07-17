@@ -658,24 +658,18 @@ impl Spma {
             e_cost / raw_new_cost
         });
 
-        // Higher levels: use pid sequences derived from match log
-        let mut current_seq = ids.clone();
-        let mut current_costs_vec = costs.clone();
+        // Higher levels: use pid sequences derived from match log.
+        // Seed with best_raw.match_log — level=1 reuses it directly, no redundant beam call.
+        let mut prev_match_log: Vec<crate::beam::MatchEvent> = best_raw.match_log;
 
         for level in 1..self.grammar.levels.len() {
-            // Build pid sequence from previous level beam result
             let prev_patterns: Vec<&Pattern> =
                 self.grammar.levels[level - 1].patterns.iter().collect();
-            let prev_results = beam_search(
-                &current_seq,
-                &prev_patterns,
-                self.beam_k,
-                &current_costs_vec,
-            );
 
-            let pid_seq: Vec<u32> = if let Some(best) = prev_results.into_iter().next() {
+            // Build pid_seq from prev_match_log (best_raw at level=1, prior beam at level>=2)
+            let pid_seq: Vec<u32> = {
                 let mut pid_positions: Vec<(u32, usize)> = Vec::new();
-                for event in &best.match_log {
+                for event in &prev_match_log {
                     if event.old_pos == 0 {
                         if let Some(pat) = prev_patterns.get(event.old_idx) {
                             pid_positions.push((pat.id, event.new_pos));
@@ -685,8 +679,6 @@ impl Spma {
                 pid_positions.sort_by_key(|&(_, pos)| pos);
                 pid_positions.dedup_by_key(|x| x.1);
                 pid_positions.into_iter().map(|(pid, _)| pid).collect()
-            } else {
-                Vec::new()
             };
 
             if pid_seq.is_empty() {
@@ -737,9 +729,9 @@ impl Spma {
             pid_costs_ext.resize(max_ref.max(pid_costs_ext.len()), fallback_pid);
 
             let level_results = beam_search(&pid_seq, &level_patterns, self.beam_k, &pid_costs_ext);
-            let lc = level_results
-                .into_iter()
-                .next()
+            let best_level = level_results.into_iter().next();
+            let lc = best_level
+                .as_ref()
                 .map(|r| r.e_cost)
                 .unwrap_or(raw_level_cost);
 
@@ -750,8 +742,8 @@ impl Spma {
                 lc / raw_level_cost
             });
 
-            current_seq = pid_seq;
-            current_costs_vec = pid_costs_ext;
+            // Pass this level's match_log to next iteration instead of re-running beam
+            prev_match_log = best_level.map(|r| r.match_log).unwrap_or_default();
         }
 
         let dist = &self.grammar.e_distribution;

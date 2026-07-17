@@ -6,6 +6,7 @@
 - **Parallel infer**: `spma infer` parallelizes sequence scoring with rayon. Sequences are independent — embarrassingly parallel. Stdout buffered and flushed after all workers complete.
 - **mimalloc**: global allocator replaced with mimalloc for parallel allocation throughput.
 - **MDL cache**: total E cost cached during training beam passes — avoids a full extra pass to build `e_distribution`.
+- **Infer match_log reuse**: level-0 `beam_search` result's `match_log` seeded directly into the N-level loop; level=1 extracts pid_seq from it without a second beam call.
 
 Observed on HDFS (1k training corpus, 446k infer):
 - Training (1k sequences): seconds
@@ -45,9 +46,6 @@ AVX2: 8 `u32` symbols per instruction. Only after B+C are done.
 **F — Arena allocator for beam candidates** *(profile first)*
 `bumpalo` arena for short-lived `PartialAlignment` structs. Only relevant at beam_k > 50.
 
-**G — Redundant level-0 beam search in infer**
-`infer` runs `beam_search` on level-0 patterns twice: once before the N-level loop (for alignment/e_cost), once inside the loop at `level=1` (to extract the pid sequence for level-1 input). Inputs are identical so results are identical — pure wasted work. Fix: reuse `best_raw.match_log` from the first call to extract pid sequence directly, skipping the second beam run.
-
 ## Order
 
-B → C → D → E → F → G. Establish `cargo bench` baseline before B.
+Remaining: B → C → D → E → F. Establish `cargo bench` baseline before B.
