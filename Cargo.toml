@@ -6,7 +6,7 @@ rust-version = "1.75"
 description = "Unsupervised anomaly detection for discrete event sequences via MDL-based grammar induction (SP Multiple Alignment)"
 license = "MIT OR Apache-2.0"
 authors = ["Jerome Guibert"]
-repository = "https://github.com/jguibert/spma"
+repository = "https://github.com/geronimo-iia/spma"
 keywords = ["anomaly-detection", "grammar-induction", "log-analysis", "mdl", "beam-search"]
 categories = ["algorithms", "science"]
 
