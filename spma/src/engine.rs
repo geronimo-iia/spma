@@ -30,6 +30,8 @@ pub struct Spma {
     beam_k: usize,
     pub(crate) atom_costs: Vec<f64>,
     max_induced_gap: usize,
+    atom_freq: HashMap<u32, u32>,
+    total_symbol_count: u64,
 }
 
 impl Spma {
@@ -39,6 +41,8 @@ impl Spma {
             beam_k,
             atom_costs: Vec::new(),
             max_induced_gap: MAX_INDUCED_GAP,
+            atom_freq: HashMap::new(),
+            total_symbol_count: 0,
         }
     }
 
@@ -78,6 +82,14 @@ impl Spma {
 
     pub fn e_distribution(&self) -> &crate::model::EDistribution {
         &self.grammar.e_distribution
+    }
+
+    pub fn atom_freq_for_test(&self) -> &HashMap<u32, u32> {
+        &self.atom_freq
+    }
+
+    pub fn total_symbol_count_for_test(&self) -> u64 {
+        self.total_symbol_count
     }
 
     pub fn save<W: IoWrite>(&self, writer: W) -> io::Result<()> {
@@ -122,6 +134,8 @@ impl Spma {
             })
             .collect();
         self.atom_costs = costs.clone();
+        self.atom_freq = atom_freq;
+        self.total_symbol_count = total_atoms as u64;
 
         let profile = std::env::var("SPMA_PROFILE").is_ok();
 

@@ -178,3 +178,33 @@ fn multilevel_level1_pattern_induced() {
         result.e_norm
     );
 }
+
+// ── Scenario 19 ───────────────────────────────────────────────────────────────
+
+#[test]
+fn atom_freq_persists_across_save_load() {
+    let corpus = vec![
+        vec!["A", "B", "A"],
+        vec!["A", "B", "C"],
+    ];
+    let mut spma = Spma::new(5);
+    spma.train(&corpus);
+
+    let a_id = spma.grammar().interner.get("A").unwrap();
+    let b_id = spma.grammar().interner.get("B").unwrap();
+    let c_id = spma.grammar().interner.get("C").unwrap();
+
+    // A appears 3 times, B 2 times, C 1 time, total 6
+    assert_eq!(spma.atom_freq_for_test()[&a_id], 3, "A freq must be 3");
+    assert_eq!(spma.atom_freq_for_test()[&b_id], 2, "B freq must be 2");
+    assert_eq!(spma.atom_freq_for_test()[&c_id], 1, "C freq must be 1");
+    assert_eq!(spma.total_symbol_count_for_test(), 6, "total must be 6");
+
+    // serde roundtrip preserves the counts
+    let mut buf = Vec::new();
+    spma.save(std::io::BufWriter::new(&mut buf)).unwrap();
+    let loaded = Spma::load(std::io::BufReader::new(buf.as_slice())).unwrap();
+
+    assert_eq!(loaded.atom_freq_for_test()[&a_id], 3, "loaded A freq must be 3");
+    assert_eq!(loaded.total_symbol_count_for_test(), 6, "loaded total must be 6");
+}
