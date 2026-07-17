@@ -11,6 +11,11 @@
 
 ### Changed
 
+- `Spma::infer`: reuses level-0 `match_log` for level-1 pid_seq extraction; eliminates
+  one redundant `beam_search` call per inference sequence
+
+### Changed
+
 - Cargo workspace split: `spma` lib crate (no `anyhow`/`clap`/`mimalloc`) + `spma-cli` bin crate; install with `cargo install spma-cli`
 - `anyhow`, `clap`, `mimalloc` removed from library dependency graph — no longer forced on downstream lib users
 
