@@ -80,6 +80,25 @@ enum Command {
         #[arg(long, value_parser = parse_level_threshold)]
         level_threshold: Vec<(usize, f64)>,
     },
+
+    /// Reload a model, replay corpus to refit e_distribution, save updated model
+    Recalibrate {
+        /// Path to saved model (modified in place or written to --output)
+        #[arg(short, long)]
+        model: String,
+
+        /// Training corpus to replay (one sequence per line, tokens space-separated)
+        #[arg(short, long)]
+        corpus: String,
+
+        /// Output path; if omitted, overwrites --model
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Override anomaly threshold after recalibration
+        #[arg(short, long)]
+        threshold: Option<f64>,
+    },
 }
 
 fn parse_level_threshold(s: &str) -> Result<(usize, f64), String> {
@@ -575,6 +594,41 @@ fn main() -> Result<()> {
             if any_anomaly {
                 std::process::exit(1);
             }
+        }
+
+        Command::Recalibrate {
+            model,
+            corpus,
+            output,
+            threshold,
+        } => {
+            let f = File::open(&model).with_context(|| format!("open model: {model}"))?;
+            let mut spma =
+                Spma::load(BufReader::new(f)).with_context(|| format!("load model: {model}"))?;
+
+            let raw = read_corpus(&corpus)?;
+            let corpus_refs: Vec<Vec<&str>> = raw
+                .iter()
+                .map(|seq| seq.iter().map(String::as_str).collect())
+                .collect();
+
+            spma.recalibrate(&corpus_refs);
+
+            if let Some(t) = threshold {
+                spma.set_anomaly_threshold(t);
+            }
+
+            let out_path = output.as_deref().unwrap_or(&model);
+            let f = File::create(out_path).with_context(|| format!("create output: {out_path}"))?;
+            spma.save(BufWriter::new(f))
+                .with_context(|| format!("save model: {out_path}"))?;
+
+            let dist = spma.e_distribution();
+            eprintln!(
+                "recalibrated: {} sequences, threshold={:.4}",
+                raw.len(),
+                dist.threshold
+            );
         }
     }
 
