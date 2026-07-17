@@ -19,6 +19,10 @@ not be.
 **Workaround**: increase corpus size, or ensure training sequences have
 consistent ordering if ordering matters for your use case.
 
+## Public fields allow direct mutation of grammar internals
+
+`Spma::grammar`, `Spma::atom_costs`, and `Grammar` sub-fields are `pub`. Callers can mutate the grammar directly, making invariants (e.g. `atom_costs.len() == interner.len()`) unenforceable. Read access is intentional — inspectability is a core feature. Write access is incidental. Fix in v0.2: read-only accessors (`&Grammar`, `&[f64]`) with `pub(crate)` on fields.
+
 ## CLI deps leak into library dependency graph
 
 `anyhow` and `clap` are CLI-only but listed in `[dependencies]`, forcing them on library users. The fix is a Cargo workspace (`spma` lib + `spma-cli` bin). Deferred to v0.2 — not a correctness issue, but annoying for downstream library users.
