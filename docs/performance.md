@@ -1,43 +1,34 @@
 # Performance
 
-Notes on possible improvements. Only Phase A is implemented. Everything below is unexplored — profile before committing to any of it.
+## Current implementation
 
-## Targets
+- **String interning**: all hot paths operate on `u32` IDs (`symbol_id`, `pattern_id`). No `String::eq` in beam search or cost computation.
+- **Parallel infer**: `spma infer` parallelizes sequence scoring with rayon. Sequences are independent — embarrassingly parallel. Stdout buffered and flushed after all workers complete.
+- **mimalloc**: global allocator replaced with mimalloc for parallel allocation throughput.
+- **MDL cache**: total E cost cached during training beam passes — avoids a full extra pass to build `e_distribution`.
 
-| Dataset | Patterns | Symbols each | Target time |
-|---|---|---|---|
-| Small | 1,000 | 20 | < 5s |
-| Medium | 10,000 | 50 | < 10 min |
-| Large | 100,000 | 100 | < 4 hours |
+Observed on HDFS (1k training corpus, 446k infer):
+- Training (1k sequences): seconds
+- Infer (446k sequences, parallel): minutes
 
-## Bottlenecks
+## Potential improvements
 
-1. **Hit detection**: O(new_len × old_pattern_count × max_old_len) — all-against-all, sequential
-2. **Beam search**: O(new_len × beam_k × old_pattern_count) per New pattern — dominates at large grammar
-3. **Memory**: `Vec<Symbol>` in `Vec<Pattern>` in `Vec<Alignment>` — pointer chasing on every access
-
-## Phases
-
-**A — String interning** ✅
-`String::eq` → `u32 ==`. All hot paths operate on u32 IDs.
+Profile before committing to any of these. Accept only if target metric improves ≥2x.
 
 **B — Structure of Arrays layout**
-Replace AoS with flat Vecs + offset table. Expected 3-5x on cost computation and frequency updates.
+Replace AoS with flat Vecs + offset table. Expected 3–5x on cost computation and frequency updates.
 
 ```rust
 pub struct PatternStore {
-    ids: Vec<u32>,
-    frequencies: Vec<u32>,
-    total_costs: Vec<f64>,
     symbol_data: Vec<u32>,      // all symbols concatenated
     symbol_offsets: Vec<u32>,   // symbol_data[offsets[i]..offsets[i+1]] = pattern i
-    symbol_costs: Vec<f64>,
-    origins: Vec<String>,       // cold, display only
+    frequencies: Vec<u32>,
+    total_costs: Vec<f64>,
 }
 ```
 
 **C — Inverted index for hit detection**
-`symbol_id → Vec<(pattern_id, position)>`. Drops hit detection from O(L × N × avg_len) to O(L × avg_occurrences). Typically 10-100x.
+`symbol_id → Vec<(pattern_id, position)>`. Drops hit detection from O(L × N × avg_len) to O(L × avg_occurrences). Expected 10–100x on large grammars.
 
 ```rust
 pub struct SymbolIndex {
@@ -45,22 +36,15 @@ pub struct SymbolIndex {
 }
 ```
 
-**D — Parallel beam search (rayon)**
-Each New pattern is independent — embarrassingly parallel. Grammar update stays sequential per epoch.
-
-```rust
-let results: Vec<_> = new_patterns
-    .par_iter()
-    .map(|new| beam_search(new, &old_store, &symbol_index, beam_k, &costs))
-    .collect();
-```
+**D — Parallel training**
+Training beam passes are currently sequential per level. Each New pattern is independent within a level — could parallelize with rayon, keeping grammar update sequential.
 
 **E — SIMD symbol comparison** *(profile first)*
-AVX2: 8 `u32` symbols per instruction. `#[cfg(target_feature = "avx2")]` with scalar fallback. Only after B+C.
+AVX2: 8 `u32` symbols per instruction. Only after B+C are done.
 
 **F — Arena allocator for beam candidates** *(profile first)*
-`bumpalo` arena for short-lived `PartialAlignment` structs. Only relevant when beam_k > 50.
+`bumpalo` arena for short-lived `PartialAlignment` structs. Only relevant at beam_k > 50.
 
 ## Order
 
-B → C → D → E → F. Establish `cargo bench` baseline before B. Accept each phase only if target metric improves ≥2x.
+B → C → D → E → F. Establish `cargo bench` baseline before B.
