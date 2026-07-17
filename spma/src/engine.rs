@@ -100,7 +100,11 @@ impl Spma {
         serde_json::from_reader(reader).map_err(io::Error::other)
     }
 
-    pub fn train(&mut self, corpus: &[Vec<&str>]) {
+    fn train_inner(&mut self, corpus: &[Vec<&str>]) {
+        if corpus.is_empty() {
+            return;
+        }
+
         // Step 1: intern all symbols
         for seq in corpus {
             for s in seq {
@@ -108,7 +112,7 @@ impl Spma {
             }
         }
 
-        // Step 2: build atom-level sequences and uniform costs
+        // Step 2: build atom-level sequences
         let atom_seqs: Vec<Vec<u32>> = corpus
             .iter()
             .map(|seq| {
@@ -118,40 +122,104 @@ impl Spma {
             })
             .collect();
 
-        let n_atoms = self.grammar.interner.len();
-        // Frequency-based costs: -log2(freq/total) per atom
-        let mut atom_freq: HashMap<u32, u32> = HashMap::new();
-        let total_atoms: u32 = atom_seqs.iter().flat_map(|s| s.iter()).count() as u32;
+        // Merge frequencies into self.atom_freq / self.total_symbol_count
         for seq in &atom_seqs {
             for &id in seq {
-                *atom_freq.entry(id).or_insert(0) += 1;
+                *self.atom_freq.entry(id).or_insert(0) += 1;
+                self.total_symbol_count += 1;
             }
         }
+        let n_atoms = self.grammar.interner.len();
+        let total = self.total_symbol_count as f64;
         let costs: Vec<f64> = (0..n_atoms as u32)
             .map(|id| {
-                let freq = atom_freq.get(&id).copied().unwrap_or(1);
-                -((freq as f64 / total_atoms as f64).log2())
+                let freq = self.atom_freq.get(&id).copied().unwrap_or(1);
+                -((freq as f64 / total).log2())
             })
             .collect();
         self.atom_costs = costs.clone();
-        self.atom_freq = atom_freq;
-        self.total_symbol_count = total_atoms as u64;
 
         let profile = std::env::var("SPMA_PROFILE").is_ok();
 
-        // Step 3: cold-start — extract frequent n-grams from atom sequences
+        // Step 3: extract frequent n-grams from atom sequences
         let min_freq = (corpus.len() / 2).max(2);
         let t_step3_ngrams = std::time::Instant::now();
         let ngrams = extract_frequent_ngrams(&atom_seqs, min_freq);
         let ms_step3_ngrams = t_step3_ngrams.elapsed().as_millis();
         let t_l0_mdl = std::time::Instant::now();
 
-        // Build level-0 patterns from n-grams
-        let mut next_id: u32 = 0;
-        let mut level0_patterns: Vec<Pattern> = Vec::new();
-        let mut all_id_vecs: Vec<Vec<u32>> = Vec::new();
+        // next_id: 0 on cold start, max existing + 1 on incremental
+        let mut next_id: u32 = self
+            .grammar
+            .levels
+            .iter()
+            .flat_map(|l| l.patterns.iter())
+            .map(|p| p.id + 1)
+            .max()
+            .unwrap_or(0);
+
+        // Seed all_id_vecs and cached_g_l0 from existing level-0 patterns (empty on cold start)
+        let mut all_id_vecs: Vec<Vec<u32>> = self
+            .grammar
+            .levels
+            .first()
+            .map(|l| {
+                l.patterns
+                    .iter()
+                    .map(|p| {
+                        p.symbols
+                            .iter()
+                            .map(|s| match s {
+                                SymbolRef::Atom(id) | SymbolRef::Pattern(id) => *id,
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut cached_g_l0: f64 = self
+            .grammar
+            .levels
+            .first()
+            .map(|l| {
+                l.patterns
+                    .iter()
+                    .map(|p| {
+                        p.symbols
+                            .iter()
+                            .map(|s| match s {
+                                SymbolRef::Atom(id) | SymbolRef::Pattern(id) => {
+                                    costs.get(*id as usize).copied().unwrap_or(1.0)
+                                }
+                            })
+                            .sum::<f64>()
+                    })
+                    .sum::<f64>()
+            })
+            .unwrap_or(0.0);
         let mut cached_e_l0 = compute_total_e_dp(&atom_seqs, &all_id_vecs, &costs);
-        let mut cached_g_l0: f64 = 0.0;
+
+        // Fingerprint set of existing level-0 patterns — skip already-known on incremental
+        let existing_fps: std::collections::HashSet<Vec<u32>> = self
+            .grammar
+            .levels
+            .first()
+            .map(|l| {
+                l.patterns
+                    .iter()
+                    .map(|p| {
+                        p.symbols
+                            .iter()
+                            .map(|s| match s {
+                                SymbolRef::Atom(id) | SymbolRef::Pattern(id) => *id,
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut level0_patterns: Vec<Pattern> = Vec::new();
 
         for (ngram, _freq) in &ngrams {
             // Gap-encoded candidates: [sym_i, GAP_MARKER, gap_size, sym_j]
@@ -164,6 +232,11 @@ impl Spma {
                 ngram.clone()
             };
 
+            // Skip already-known patterns (no-op on cold start — existing_fps is empty)
+            if existing_fps.contains(&atom_ids) {
+                continue;
+            }
+
             let pattern_cost: f64 = atom_ids.iter().map(|&id| costs[id as usize]).sum();
             let new_g: f64 = cached_g_l0 + pattern_cost;
             let current_t = cached_g_l0 + cached_e_l0;
@@ -175,7 +248,7 @@ impl Spma {
             let new_e = compute_total_e_dp(&atom_seqs, &candidate_multi, &costs);
             let new_t = new_g + new_e;
 
-            if new_t < current_t || all_id_vecs.is_empty() {
+            if new_t < current_t || (all_id_vecs.is_empty() && existing_fps.is_empty()) {
                 let freq = ngrams
                     .iter()
                     .find(|(n, _)| n == ngram)
@@ -203,8 +276,8 @@ impl Spma {
             }
         }
 
-        // If cold-start found nothing, push at least the most frequent bigram
-        if level0_patterns.is_empty() && !ngrams.is_empty() {
+        // Fallback: if cold start found nothing, push the most frequent bigram
+        if level0_patterns.is_empty() && self.grammar.levels.is_empty() && !ngrams.is_empty() {
             let (ngram, freq) = &ngrams[0];
             let is_gap = ngram.len() == 4 && ngram[1] == GAP_MARKER;
             let pat = if is_gap {
@@ -232,7 +305,12 @@ impl Spma {
 
         let ms_l0_mdl = t_l0_mdl.elapsed().as_millis();
 
-        self.grammar.levels.push(GrammarLevel::new(level0_patterns));
+        // Push new level on cold start, extend existing on incremental
+        if self.grammar.levels.is_empty() {
+            self.grammar.levels.push(GrammarLevel::new(level0_patterns));
+        } else {
+            self.grammar.levels[0].patterns.extend(level0_patterns);
+        }
 
         // Step 4: outer N-level loop — learn hierarchical levels
         let max_levels: usize = 8;
@@ -247,6 +325,9 @@ impl Spma {
         let mut level_e_norms_vecs: Vec<Vec<f64>> = Vec::new();
 
         for level in 0..max_levels {
+            if level >= self.grammar.levels.len() {
+                break;
+            }
             let level_patterns: Vec<&Pattern> =
                 self.grammar.levels[level].patterns.iter().collect();
             if level_patterns.is_empty() {
@@ -438,19 +519,38 @@ impl Spma {
                 break;
             }
 
-            self.grammar.levels.push(GrammarLevel::new(accepted_pats));
+            // Push new level on cold start, extend existing on incremental
+            let next_level = level + 1;
+            if next_level < self.grammar.levels.len() {
+                self.grammar.levels[next_level].patterns.extend(accepted_pats);
+            } else {
+                self.grammar.levels.push(GrammarLevel::new(accepted_pats));
+            }
             current_atom_seqs = pid_seqs;
             current_costs = pid_costs;
         }
 
         let t_edist = std::time::Instant::now();
 
-        // Reuse e_norms cached during training beam passes — avoids a full extra pass.
-        // level_e_norms_vecs[0] = atom-level e_norms (identical to what infer_internal computes).
-        let e_norms: Vec<f64> = level_e_norms_vecs.first().cloned().unwrap_or_default();
+        // Merge new e_norms into existing distribution; preserve user-set level_thresholds.
+        let new_e_norms: Vec<f64> = level_e_norms_vecs.first().cloned().unwrap_or_default();
+        let mut all_e_norms = self.grammar.e_distribution.sorted_e_norms.clone();
+        all_e_norms.extend(new_e_norms);
 
+        let mut merged_level_e_norms = self.grammar.e_distribution.level_sorted_e_norms.clone();
+        for (i, new_lvl) in level_e_norms_vecs.into_iter().enumerate() {
+            if i < merged_level_e_norms.len() {
+                merged_level_e_norms[i].extend(new_lvl);
+            } else {
+                merged_level_e_norms.push(new_lvl);
+            }
+        }
+
+        let level_thresholds = self.grammar.e_distribution.level_thresholds.clone();
+        let threshold = self.grammar.e_distribution.threshold;
         self.grammar.e_distribution =
-            crate::model::EDistribution::fit(e_norms, 0.0, level_e_norms_vecs);
+            crate::model::EDistribution::fit(all_e_norms, threshold, merged_level_e_norms);
+        self.grammar.e_distribution.level_thresholds = level_thresholds;
 
         let ms_edist = t_edist.elapsed().as_millis();
 
@@ -462,6 +562,14 @@ impl Spma {
             eprintln!("[profile] levelN_mdl:         {}ms", cum_mdl_ms);
             eprintln!("[profile] edist_rebuild:      {}ms", ms_edist);
         }
+    }
+
+    pub fn train(&mut self, corpus: &[Vec<&str>]) {
+        self.grammar = Grammar::default();
+        self.atom_freq = HashMap::new();
+        self.total_symbol_count = 0;
+        self.atom_costs = Vec::new();
+        self.train_inner(corpus);
     }
 
     pub fn infer(&self, seq: &[&str]) -> InferResult {
