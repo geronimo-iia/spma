@@ -205,11 +205,10 @@ impl fmt::Display for Alignment {
             writeln!(f)?;
         }
 
-        let t = self.e_cost;
         write!(
             f,
             "---\nE: {:.1} bits   CD: {:.1} bits   T: {:.1} bits",
-            self.e_cost, self.cd, t
+            self.e_cost, self.cd, self.e_cost + self.cd
         )
     }
 }
