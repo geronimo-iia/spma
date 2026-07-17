@@ -829,40 +829,7 @@ fn extract_learned_patterns(
             let mut symbols: Vec<SymbolRef> = Vec::new();
             let mut gaps: Vec<crate::model::GapConstraint> = Vec::new();
 
-            for (si, &(start, end)) in sub_spans.iter().enumerate() {
-                // Add symbols from this span
-                for i in start..end {
-                    symbols.push(pattern.symbols[i]);
-                }
-                // Add gap constraint between this span and the next
-                if si + 1 < sub_spans.len() {
-                    let next_start = sub_spans[si + 1].0;
-                    let actual_gap = next_start - end;
-                    // Within span: no gaps needed (contiguous)
-                    // Between sub-spans: one gap constraint after last symbol of this span
-                    // We need one GapConstraint per adjacent symbol pair that crosses a sub-span boundary
-                    // The gap sits between symbols[end-1] and symbols[next_start]
-                    // We need (end - start - 1) contiguous constraints within span (already handled by no gaps)
-                    // plus one gap constraint at the boundary
-                    // Since within a span symbols are contiguous, only one gap per span boundary
-                    // But gaps.len() must == symbols.len() - 1, so we need one per adjacent pair
-                    // Within a span: GapConstraint{0,0} (contiguous)
-                    let span_len = end - start;
-                    // We already pushed span_len symbols; need span_len-1 within-span gaps
-                    // + 1 cross-span gap. But we build gaps aligned with symbols as we go.
-                    // Rebuild: after adding within-span symbols above, add intra-span gaps
-                    // (0,0) for all but last, then the cross-span gap.
-                    // Actually easier: build symbols first, then build gaps in a second pass.
-                    // Let's use a different approach below.
-                    let _ = actual_gap; // will rebuild
-                    let _ = span_len;
-                    gaps.clear(); // will rebuild properly
-                    break;
-                }
-            }
-
-            // Rebuild properly: symbols then gaps
-            symbols.clear();
+            // Build symbols then gaps in two passes
             for &(start, end) in &sub_spans {
                 for i in start..end {
                     symbols.push(pattern.symbols[i]);

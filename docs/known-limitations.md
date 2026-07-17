@@ -19,6 +19,10 @@ not be.
 **Workaround**: increase corpus size, or ensure training sequences have
 consistent ordering if ordering matters for your use case.
 
+## CLI deps leak into library dependency graph
+
+`anyhow` and `clap` are CLI-only but listed in `[dependencies]`, forcing them on library users. The fix is a Cargo workspace (`spma` lib + `spma-cli` bin). Deferred to v0.2 — not a correctness issue, but annoying for downstream library users.
+
 ## F1 ceiling on HDFS without labeled supervision
 
 On the HDFS benchmark, F1=0.893 is the unsupervised ceiling. 92% of false
