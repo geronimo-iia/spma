@@ -572,6 +572,10 @@ impl Spma {
         self.train_inner(corpus);
     }
 
+    pub fn retrain(&mut self, corpus: &[Vec<&str>]) {
+        self.train_inner(corpus);
+    }
+
     pub fn infer(&self, seq: &[&str]) -> InferResult {
         let n_atoms = self.grammar.interner.len();
         // Fallback cost for unknown symbols: max atom cost or 1.0

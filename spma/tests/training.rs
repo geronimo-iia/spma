@@ -208,3 +208,66 @@ fn atom_freq_persists_across_save_load() {
     assert_eq!(loaded.atom_freq_for_test()[&a_id], 3, "loaded A freq must be 3");
     assert_eq!(loaded.total_symbol_count_for_test(), 6, "loaded total must be 6");
 }
+
+// ── Scenario 20 ───────────────────────────────────────────────────────────────
+
+#[test]
+fn retrain_adds_new_patterns() {
+    let corpus1 = repeat(vec!["A", "B"], 10);
+    let mut spma = Spma::new(5);
+    spma.train(&corpus1);
+    let n_before = spma.grammar().levels[0].patterns.len();
+
+    let corpus2 = repeat(vec!["C", "D"], 10);
+    spma.retrain(&corpus2);
+    let n_after = spma.grammar().levels[0].patterns.len();
+
+    assert!(
+        n_after >= n_before,
+        "retrain must not shrink grammar: before={n_before} after={n_after}"
+    );
+}
+
+#[test]
+fn retrain_preserves_existing_patterns() {
+    let corpus1 = repeat(vec!["A", "B"], 10);
+    let mut spma = Spma::new(5);
+    spma.train(&corpus1);
+
+    let ids_before: Vec<u32> = spma.grammar().levels[0].patterns.iter().map(|p| p.id).collect();
+
+    let corpus2 = repeat(vec!["C", "D"], 10);
+    spma.retrain(&corpus2);
+
+    let ids_after: Vec<u32> = spma.grammar().levels[0].patterns.iter().map(|p| p.id).collect();
+    for id in &ids_before {
+        assert!(ids_after.contains(id), "pattern id={id} was lost after retrain");
+    }
+}
+
+#[test]
+fn retrain_known_sequences_stay_normal() {
+    let corpus1 = repeat(vec!["A", "B", "C"], 10);
+    let mut spma = Spma::new(5);
+    spma.train(&corpus1);
+
+    let corpus2 = repeat(vec!["D", "E", "F"], 10);
+    spma.retrain(&corpus2);
+
+    let r1 = spma.infer(&["A", "B", "C"]);
+    let r2 = spma.infer(&["D", "E", "F"]);
+    assert!(r1.e_norm < 0.5, "corpus1 seq anomalous after retrain: e_norm={}", r1.e_norm);
+    assert!(r2.e_norm < 0.5, "corpus2 seq anomalous after retrain: e_norm={}", r2.e_norm);
+}
+
+#[test]
+fn train_is_still_cold_start() {
+    let corpus1 = repeat(vec!["A", "B"], 10);
+    let corpus2 = repeat(vec!["C", "D"], 10);
+    let mut spma = Spma::new(5);
+    spma.train(&corpus1);
+    spma.train(&corpus2);
+
+    let a_id = spma.grammar().interner.get("A");
+    assert!(a_id.is_none(), "train twice: A should not be in grammar after second train");
+}
