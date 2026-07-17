@@ -15,3 +15,7 @@
 - `Spma::save` / `Spma::load`: JSON serialization via serde
 - CLI subcommands: `train`, `infer`, `recalibrate`, `grammar` (human and JSON output)
 - Validated on LogHub HDFS: F1 = 0.893 unsupervised (see spma-experiments)
+
+### Fixed
+
+- `Alignment` display: T footer now correctly shows E + CD (was showing E twice)
