@@ -106,7 +106,7 @@ Runnable examples covering golden path, save/load, order detection, and threshol
 ## CLI quickstart
 
 ```sh
-cargo install spma
+cargo install spma-cli
 ```
 
 ```sh

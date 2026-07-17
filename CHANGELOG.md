@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0] — 2026-07-18
+
+### Changed
+
+- Cargo workspace split: `spma` lib crate (no `anyhow`/`clap`/`mimalloc`) + `spma-cli` bin crate; install with `cargo install spma-cli`
+- `anyhow`, `clap`, `mimalloc` removed from library dependency graph — no longer forced on downstream lib users
+
 ## [0.1.0] — 2026-07-17
 
 ### Added

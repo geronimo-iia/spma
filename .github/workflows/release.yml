@@ -46,9 +46,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --locked --target ${{ matrix.target }}
+            cross build --release --locked -p spma-cli --target ${{ matrix.target }}
           else
-            cargo build --release --locked --target ${{ matrix.target }}
+            cargo build --release --locked -p spma-cli --target ${{ matrix.target }}
           fi
 
       - name: Package
@@ -89,4 +89,4 @@ jobs:
           toolchain: stable
 
       - name: Publish to crates.io
-        run: cargo publish --locked --token ${{ secrets.CARGO_TOKEN }}
+        run: cargo publish --locked -p spma --token ${{ secrets.CARGO_TOKEN }}
