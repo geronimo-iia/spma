@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::io::{self, Read as IoRead, Write as IoWrite};
 
+use rayon::prelude::*;
+
 use crate::alignment::{build_alignment, Alignment};
 use crate::beam::{beam_search, RawAlignment};
 use crate::model::{Grammar, GrammarLevel, Pattern, SymbolRef};
@@ -60,27 +62,6 @@ impl Spma {
         serde_json::from_reader(reader).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
     }
 
-    fn infer_internal(&self, seq: &[u32]) -> (f64, f64) {
-        if seq.is_empty() {
-            return (0.0, 0.0);
-        }
-        let raw_new_cost: f64 = seq
-            .iter()
-            .map(|&id| self.atom_costs.get(id as usize).copied().unwrap_or(1.0))
-            .sum();
-        if self.grammar.levels.is_empty() {
-            return (raw_new_cost, raw_new_cost);
-        }
-        let level0_patterns: Vec<&Pattern> = self.grammar.levels[0].patterns.iter().collect();
-        let results = beam_search(seq, &level0_patterns, self.beam_k, &self.atom_costs);
-        let e_cost = results
-            .into_iter()
-            .next()
-            .map(|r| r.e_cost)
-            .unwrap_or(raw_new_cost);
-        (e_cost, raw_new_cost)
-    }
-
     pub fn train(&mut self, corpus: &[Vec<&str>]) {
         // Step 1: intern all symbols
         for seq in corpus {
@@ -116,14 +97,21 @@ impl Spma {
             .collect();
         self.atom_costs = costs.clone();
 
+        let profile = std::env::var("SPMA_PROFILE").is_ok();
+
         // Step 3: cold-start — extract frequent n-grams from atom sequences
         let min_freq = (corpus.len() / 2).max(2);
+        let t_step3_ngrams = std::time::Instant::now();
         let ngrams = extract_frequent_ngrams(&atom_seqs, min_freq);
+        let ms_step3_ngrams = t_step3_ngrams.elapsed().as_millis();
+        let t_l0_mdl = std::time::Instant::now();
 
         // Build level-0 patterns from n-grams
         let mut next_id: u32 = 0;
         let mut level0_patterns: Vec<Pattern> = Vec::new();
         let mut all_id_vecs: Vec<Vec<u32>> = Vec::new();
+        let mut cached_e_l0 = compute_total_e_dp(&atom_seqs, &all_id_vecs, &costs);
+        let mut cached_g_l0: f64 = 0.0;
 
         for (ngram, _freq) in &ngrams {
             // Gap-encoded candidates: [sym_i, GAP_MARKER, gap_size, sym_j]
@@ -137,14 +125,8 @@ impl Spma {
             };
 
             let pattern_cost: f64 = atom_ids.iter().map(|&id| costs[id as usize]).sum();
-            let new_g: f64 = all_id_vecs
-                .iter()
-                .flat_map(|v| v.iter())
-                .map(|&id| costs[id as usize])
-                .sum::<f64>()
-                + pattern_cost;
-            let current_e = compute_total_e_dp(&atom_seqs, &all_id_vecs, &costs);
-            let current_t = new_g - pattern_cost + current_e;
+            let new_g: f64 = cached_g_l0 + pattern_cost;
+            let current_t = cached_g_l0 + cached_e_l0;
 
             // For dp matching, gap patterns reduce to their two flanking atoms
             let matching_vec = atom_ids.clone();
@@ -175,6 +157,8 @@ impl Spma {
                 };
                 level0_patterns.push(pat);
                 all_id_vecs.push(matching_vec);
+                cached_e_l0 = new_e;
+                cached_g_l0 = new_g;
                 next_id += 1;
             }
         }
@@ -206,12 +190,21 @@ impl Spma {
             next_id += 1;
         }
 
+        let ms_l0_mdl = t_l0_mdl.elapsed().as_millis();
+
         self.grammar.levels.push(GrammarLevel::new(level0_patterns));
 
         // Step 4: outer N-level loop — learn hierarchical levels
         let max_levels: usize = 8;
         let mut current_atom_seqs = atom_seqs.clone();
         let mut current_costs = costs.clone();
+
+        let mut cum_beam_ms: u128 = 0;
+        let mut cum_gap_ms: u128 = 0;
+        let mut cum_mdl_ms: u128 = 0;
+
+        // Cache e_norms per level during beam passes to avoid edist full rebuild
+        let mut level_e_norms_vecs: Vec<Vec<f64>> = Vec::new();
 
         for level in 0..max_levels {
             let level_patterns: Vec<&Pattern> =
@@ -222,18 +215,42 @@ impl Spma {
 
             // Run beam_search on each sequence to get match logs
             // Collect results first (immutable borrow ends), then update frequencies.
+            let t_beam = std::time::Instant::now();
             let raw_results: Vec<Option<RawAlignment>> = current_atom_seqs
-                .iter()
+                .par_iter()
                 .map(|seq| {
                     beam_search(seq, &level_patterns, self.beam_k, &current_costs)
                         .into_iter()
                         .next()
                 })
                 .collect();
+            let beam_ms = t_beam.elapsed().as_millis();
+            cum_beam_ms += beam_ms;
+
+            // Cache e_norms at this level for edist population
+            {
+                let lvl_e: Vec<f64> = current_atom_seqs
+                    .par_iter()
+                    .zip(raw_results.par_iter())
+                    .filter_map(|(seq, res)| {
+                        let raw: f64 = seq
+                            .iter()
+                            .map(|&id| current_costs.get(id as usize).copied().unwrap_or(1.0))
+                            .sum();
+                        if raw < 1e-12 {
+                            return None;
+                        }
+                        let e = res.as_ref().map(|r| r.e_cost).unwrap_or(raw);
+                        Some(e / raw)
+                    })
+                    .collect();
+                level_e_norms_vecs.push(lvl_e);
+            }
 
             let mut all_match_logs: Vec<Vec<crate::beam::MatchEvent>> = Vec::new();
             let mut gap_candidates: Vec<Pattern> = Vec::new();
 
+            let t_gap = std::time::Instant::now();
             for (seq_idx, best_opt) in raw_results.into_iter().enumerate() {
                 if let Some(best) = best_opt {
                     let used_idxs: std::collections::HashSet<usize> =
@@ -261,6 +278,9 @@ impl Spma {
                     all_match_logs.push(Vec::new());
                 }
             }
+
+            let gap_ms = t_gap.elapsed().as_millis();
+            cum_gap_ms += gap_ms;
 
             // Build next-level pid sequences from match logs
             let mut next_level_pats =
@@ -329,7 +349,11 @@ impl Spma {
             // MDL-gate next level patterns
             let mut next_id_vecs: Vec<Vec<u32>> = Vec::new();
             let mut accepted_pats: Vec<Pattern> = Vec::new();
+            let patterns_in = next_level_pats.len();
 
+            let t_mdl = std::time::Instant::now();
+            let mut cached_e = compute_total_e_dp(&pid_seqs, &next_id_vecs, &pid_costs);
+            let mut cached_g: f64 = 0.0;
             for pat in next_level_pats {
                 let ngram: Vec<u32> = pat
                     .symbols
@@ -340,28 +364,34 @@ impl Spma {
                     })
                     .collect();
 
-                let current_g: f64 = next_id_vecs
-                    .iter()
-                    .flat_map(|v| v.iter())
-                    .map(|&id| pid_costs.get(id as usize).copied().unwrap_or(pid_cost))
-                    .sum();
                 let pattern_cost: f64 = ngram
                     .iter()
                     .map(|&id| pid_costs.get(id as usize).copied().unwrap_or(pid_cost))
                     .sum();
-                let current_e = compute_total_e_dp(&pid_seqs, &next_id_vecs, &pid_costs);
-                let current_t = current_g + current_e;
+                let current_t = cached_g + cached_e;
 
                 let mut candidate = next_id_vecs.clone();
                 candidate.push(ngram.clone());
-                let new_g = current_g + pattern_cost;
+                let new_g = cached_g + pattern_cost;
                 let new_e = compute_total_e_dp(&pid_seqs, &candidate, &pid_costs);
                 let new_t = new_g + new_e;
 
                 if new_t < current_t || next_id_vecs.is_empty() {
                     next_id_vecs.push(ngram);
                     accepted_pats.push(pat);
+                    cached_e = new_e;
+                    cached_g = new_g;
                 }
+            }
+
+            let mdl_ms = t_mdl.elapsed().as_millis();
+            cum_mdl_ms += mdl_ms;
+
+            if profile {
+                eprintln!(
+                    "[profile] level {} beam: {}ms  gap: {}ms  mdl: {}ms  patterns_in: {}  patterns_out: {}",
+                    level, beam_ms, gap_ms, mdl_ms, patterns_in, accepted_pats.len()
+                );
             }
 
             if accepted_pats.is_empty() {
@@ -373,103 +403,25 @@ impl Spma {
             current_costs = pid_costs;
         }
 
-        // Populate EDistribution from training sequences
-        let e_norms: Vec<f64> = atom_seqs
-            .iter()
-            .filter_map(|seq| {
-                let (e_cost, raw) = self.infer_internal(seq);
-                if raw < 1e-12 {
-                    None
-                } else {
-                    Some(e_cost / raw)
-                }
-            })
-            .collect();
+        let t_edist = std::time::Instant::now();
 
-        // Per-level e_norms: for each level, run beam on that level's pid sequences
-        // collected during training (stored in current_atom_seqs after the loop)
-        let n_levels = self.grammar.levels.len();
-        let mut level_e_norms_vecs: Vec<Vec<f64>> = Vec::with_capacity(n_levels);
-
-        // Level 0: same as global e_norms (atom sequences)
-        level_e_norms_vecs.push(e_norms.clone());
-
-        // Higher levels: rebuild pid seqs from atom_seqs through each level
-        if n_levels > 1 {
-            let mut lvl_seqs: Vec<Vec<u32>> = atom_seqs.clone();
-            let mut lvl_costs: Vec<f64> = self.atom_costs.clone();
-
-            for level in 0..n_levels - 1 {
-                let level_patterns: Vec<&Pattern> =
-                    self.grammar.levels[level].patterns.iter().collect();
-                let mut next_lvl_seqs: Vec<Vec<u32>> = Vec::new();
-
-                for seq in &lvl_seqs {
-                    let results = beam_search(seq, &level_patterns, self.beam_k, &lvl_costs);
-                    let pid_seq: Vec<u32> = if let Some(best) = results.into_iter().next() {
-                        let mut pid_positions: Vec<(u32, usize)> = Vec::new();
-                        for event in &best.match_log {
-                            if event.old_pos == 0 {
-                                if let Some(pat) = level_patterns.get(event.old_idx) {
-                                    pid_positions.push((pat.id, event.new_pos));
-                                }
-                            }
-                        }
-                        pid_positions.sort_by_key(|&(_, pos)| pos);
-                        pid_positions.dedup_by_key(|x| x.1);
-                        pid_positions.into_iter().map(|(pid, _)| pid).collect()
-                    } else {
-                        Vec::new()
-                    };
-                    next_lvl_seqs.push(pid_seq);
-                }
-
-                // Build pid costs for next level
-                let n_pats = self.grammar.levels[level].patterns.len();
-                let pid_cost = if n_pats > 1 {
-                    (n_pats as f64).log2()
-                } else {
-                    1.0
-                };
-                let max_pid = self.grammar.levels[level]
-                    .patterns
-                    .iter()
-                    .map(|p| p.id as usize + 1)
-                    .max()
-                    .unwrap_or(1);
-                let next_costs = vec![pid_cost; max_pid];
-
-                // Compute e_norms at next level
-                let next_level_patterns: Vec<&Pattern> =
-                    self.grammar.levels[level + 1].patterns.iter().collect();
-                let lvl_e: Vec<f64> = next_lvl_seqs
-                    .iter()
-                    .filter_map(|seq| {
-                        if seq.is_empty() {
-                            return None;
-                        }
-                        let raw: f64 = seq
-                            .iter()
-                            .map(|&id| next_costs.get(id as usize).copied().unwrap_or(pid_cost))
-                            .sum();
-                        if raw < 1e-12 {
-                            return None;
-                        }
-                        let results =
-                            beam_search(seq, &next_level_patterns, self.beam_k, &next_costs);
-                        let e = results.into_iter().next().map(|r| r.e_cost).unwrap_or(raw);
-                        Some(e / raw)
-                    })
-                    .collect();
-                level_e_norms_vecs.push(lvl_e);
-
-                lvl_seqs = next_lvl_seqs;
-                lvl_costs = next_costs;
-            }
-        }
+        // Reuse e_norms cached during training beam passes — avoids a full extra pass.
+        // level_e_norms_vecs[0] = atom-level e_norms (identical to what infer_internal computes).
+        let e_norms: Vec<f64> = level_e_norms_vecs.first().cloned().unwrap_or_default();
 
         self.grammar.e_distribution =
             crate::model::EDistribution::fit(e_norms, 0.0, level_e_norms_vecs);
+
+        let ms_edist = t_edist.elapsed().as_millis();
+
+        if profile {
+            eprintln!("[profile] step3_ngrams:       {}ms", ms_step3_ngrams);
+            eprintln!("[profile] level0_mdl:         {}ms", ms_l0_mdl);
+            eprintln!("[profile] levelN_beam_total:  {}ms", cum_beam_ms);
+            eprintln!("[profile] levelN_gap_extract: {}ms", cum_gap_ms);
+            eprintln!("[profile] levelN_mdl:         {}ms", cum_mdl_ms);
+            eprintln!("[profile] edist_rebuild:      {}ms", ms_edist);
+        }
     }
 
     pub fn infer(&self, seq: &[&str]) -> InferResult {
