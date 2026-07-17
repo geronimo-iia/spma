@@ -665,7 +665,7 @@ const MAX_INDUCED_GAP: usize = 3;
 
 /// Count contiguous bigrams/trigrams and gap-aware pairs within a window.
 /// Gap candidates encoded as [sym_i, GAP_MARKER, gap_size, sym_j].
-pub fn extract_frequent_ngrams(seqs: &[Vec<u32>], min_freq: usize) -> Vec<(Vec<u32>, u32)> {
+pub(crate) fn extract_frequent_ngrams(seqs: &[Vec<u32>], min_freq: usize) -> Vec<(Vec<u32>, u32)> {
     let mut counts: HashMap<Vec<u32>, u32> = HashMap::new();
 
     for seq in seqs {
