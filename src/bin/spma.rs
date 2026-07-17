@@ -1,8 +1,9 @@
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, BufWriter};
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use rayon::prelude::*;
 use spma::engine::Spma;
 
 #[derive(Parser)]
@@ -120,22 +121,34 @@ fn main() -> Result<()> {
             };
 
             let buf = BufReader::new(reader);
-            let mut any_anomaly = false;
-            for line in buf.lines() {
-                let line = line?;
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-                let result = spma.infer(&tokens);
+            let lines: Vec<String> = buf
+                .lines()
+                .map(|l| l.map(|s| s.trim().to_owned()))
+                .collect::<io::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|l| !l.is_empty())
+                .collect();
 
+            let results: Vec<(Vec<String>, spma::engine::InferResult)> = lines
+                .par_iter()
+                .map(|line| {
+                    let tokens: Vec<&str> = line.split_whitespace().collect();
+                    let result = spma.infer(&tokens);
+                    (tokens.iter().map(|s| s.to_string()).collect(), result)
+                })
+                .collect();
+
+            let stdout = io::stdout();
+            let mut out = BufWriter::new(stdout.lock());
+            let mut any_anomaly = false;
+
+            for (tokens, result) in &results {
                 if result.is_anomaly {
                     any_anomaly = true;
                 }
-
                 if json {
-                    println!(
+                    writeln!(
+                        out,
                         "{{\"seq\":{:?},\"e_cost\":{:.6},\"e_norm\":{:.6},\"cd\":{:.6},\"anomaly_percentile\":{:.6},\"is_anomaly\":{}}}",
                         tokens,
                         result.e_cost,
@@ -143,17 +156,19 @@ fn main() -> Result<()> {
                         result.cd,
                         result.anomaly_percentile,
                         result.is_anomaly,
-                    );
+                    )?;
                 } else {
-                    println!(
+                    writeln!(
+                        out,
                         "{}\te_norm={:.4}\tpct={:.4}\t{}",
-                        trimmed,
+                        tokens.join(" "),
                         result.e_norm,
                         result.anomaly_percentile,
                         if result.is_anomaly { "ANOMALY" } else { "ok" },
-                    );
+                    )?;
                 }
             }
+            out.flush()?;
 
             if any_anomaly {
                 std::process::exit(1);
