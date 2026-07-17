@@ -8,7 +8,7 @@ Learns a hierarchical grammar from normal sequences, then scores new sequences b
 
 I'm a software engineer, not an ML researcher. This started as a question: is there a symbolic, interpretable approach to anomaly detection that doesn't require neural networks, labeled data, or feature engineering?
 
-That question led me to [J.G. Wolff's SP theory](https://www.cognitionresearch.org) (1993–2019) — the idea that intelligence reduces to a single operation: find the best multiple alignment between new input and stored patterns, scored by information compression.
+That question led me to [J.G. Wolff's SP theory](https://www.cognitionresearch.org) — the idea that intelligence reduces to a single operation: find the best multiple alignment between new input and stored patterns, scored by information compression.
 
 The scoring objective is two-part MDL:
 
