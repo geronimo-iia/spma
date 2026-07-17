@@ -607,6 +607,9 @@ fn main() -> Result<()> {
                 Spma::load(BufReader::new(f)).with_context(|| format!("load model: {model}"))?;
 
             let raw = read_corpus(&corpus)?;
+            if raw.is_empty() {
+                anyhow::bail!("corpus is empty: {corpus}");
+            }
             let corpus_refs: Vec<Vec<&str>> = raw
                 .iter()
                 .map(|seq| seq.iter().map(String::as_str).collect())
@@ -619,9 +622,16 @@ fn main() -> Result<()> {
             }
 
             let out_path = output.as_deref().unwrap_or(&model);
-            let f = File::create(out_path).with_context(|| format!("create output: {out_path}"))?;
+            let out_dir = std::path::Path::new(out_path)
+                .parent()
+                .unwrap_or(std::path::Path::new("."));
+            let tmp_path = out_dir.join(format!(".spma_recal_tmp_{}", std::process::id()));
+            let f = File::create(&tmp_path)
+                .with_context(|| format!("create tmp output: {}", tmp_path.display()))?;
             spma.save(BufWriter::new(f))
-                .with_context(|| format!("save model: {out_path}"))?;
+                .with_context(|| format!("save model to tmp: {}", tmp_path.display()))?;
+            std::fs::rename(&tmp_path, out_path)
+                .with_context(|| format!("rename {} -> {out_path}", tmp_path.display()))?;
 
             let dist = spma.e_distribution();
             eprintln!(
