@@ -2,7 +2,8 @@
 
 Unsupervised anomaly detection for discrete event sequences via MDL-based grammar induction (SP Multiple Alignment).
 
-Learns a hierarchical grammar from normal sequences, then scores new sequences by their encoding cost E. Sequences that compress poorly — high `e_norm` — are anomalous. Validated on LogHub HDFS achieving **F1 = 0.893** unsupervised (1k training sequences, default threshold, preprocessed event traces — see [spma-experiments](https://github.com/geronimo-iia/spma-experiments)).
+Learns a hierarchical grammar from normal sequences, then scores new sequences by their encoding cost E. Sequences that compress poorly — high `e_norm` — are anomalous.
+
 
 ## Background
 
@@ -173,4 +174,4 @@ spma infer --model model.json --level-threshold 0:0.2 --level-threshold 1:0.5
 
 ## Benchmark results
 
-Full results including HDFS LogHub evaluation (F1 = 0.893, unsupervised, no labeled data used during training) — see [spma-experiments](https://github.com/geronimo-iia/spma-experiments).
+For now (2026), validated on LogHub HDFS: Precision=0.973, Recall=0.825, F1=0.893 — trained on 1k normal sequences, no labels, no embeddings, no feature vectors — see [spma-experiments](https://github.com/geronimo-iia/spma-experiments). There is still a lot to explore — broader datasets, deeper comparison, open questions.
