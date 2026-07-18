@@ -30,7 +30,9 @@ pub struct Spma {
     beam_k: usize,
     pub(crate) atom_costs: Vec<f64>,
     max_induced_gap: usize,
+    #[serde(default)]
     atom_freq: HashMap<u32, u32>,
+    #[serde(default)]
     total_symbol_count: u64,
 }
 
@@ -97,7 +99,11 @@ impl Spma {
     }
 
     pub fn load<R: IoRead>(reader: R) -> io::Result<Self> {
-        serde_json::from_reader(reader).map_err(io::Error::other)
+        let mut spma: Self = serde_json::from_reader(reader).map_err(io::Error::other)?;
+        for level in &mut spma.grammar.levels {
+            level.rebuild_index();
+        }
+        Ok(spma)
     }
 
     fn train_inner(&mut self, corpus: &[Vec<&str>]) {
@@ -310,6 +316,7 @@ impl Spma {
             self.grammar.levels.push(GrammarLevel::new(level0_patterns));
         } else {
             self.grammar.levels[0].patterns.extend(level0_patterns);
+            self.grammar.levels[0].rebuild_index();
         }
 
         // Step 4: outer N-level loop — learn hierarchical levels
@@ -333,6 +340,7 @@ impl Spma {
             if level_patterns.is_empty() {
                 break;
             }
+            let level_index = &self.grammar.levels[level].symbol_index;
 
             // Run beam_search on each sequence to get match logs
             // Collect results first (immutable borrow ends), then update frequencies.
@@ -340,9 +348,15 @@ impl Spma {
             let raw_results: Vec<Option<RawAlignment>> = current_atom_seqs
                 .par_iter()
                 .map(|seq| {
-                    beam_search(seq, &level_patterns, self.beam_k, &current_costs)
-                        .into_iter()
-                        .next()
+                    beam_search(
+                        seq,
+                        &level_patterns,
+                        level_index,
+                        self.beam_k,
+                        &current_costs,
+                    )
+                    .into_iter()
+                    .next()
                 })
                 .collect();
             let beam_ms = t_beam.elapsed().as_millis();
@@ -525,6 +539,7 @@ impl Spma {
                 self.grammar.levels[next_level]
                     .patterns
                     .extend(accepted_pats);
+                self.grammar.levels[next_level].rebuild_index();
             } else {
                 self.grammar.levels.push(GrammarLevel::new(accepted_pats));
             }
@@ -623,8 +638,9 @@ impl Spma {
 
         // Level-0 beam search
         let level0_patterns: Vec<&Pattern> = self.grammar.levels[0].patterns.iter().collect();
+        let level0_index = &self.grammar.levels[0].symbol_index;
 
-        let results = beam_search(&ids, &level0_patterns, self.beam_k, &costs);
+        let results = beam_search(&ids, &level0_patterns, level0_index, self.beam_k, &costs);
 
         let best_raw = results.into_iter().next().unwrap_or_else(|| RawAlignment {
             match_log: Vec::new(),
@@ -717,6 +733,7 @@ impl Spma {
 
             let level_patterns: Vec<&Pattern> =
                 self.grammar.levels[level].patterns.iter().collect();
+            let level_index = &self.grammar.levels[level].symbol_index;
 
             // Extend pid_costs to cover all pattern IDs referenced
             let max_ref = pid_seq.iter().map(|&id| id as usize + 1).max().unwrap_or(1);
@@ -728,7 +745,13 @@ impl Spma {
             };
             pid_costs_ext.resize(max_ref.max(pid_costs_ext.len()), fallback_pid);
 
-            let level_results = beam_search(&pid_seq, &level_patterns, self.beam_k, &pid_costs_ext);
+            let level_results = beam_search(
+                &pid_seq,
+                &level_patterns,
+                level_index,
+                self.beam_k,
+                &pid_costs_ext,
+            );
             let best_level = level_results.into_iter().next();
             let lc = best_level
                 .as_ref()
@@ -771,6 +794,9 @@ impl Spma {
     }
 
     pub fn recalibrate(&mut self, corpus: &[Vec<&str>]) {
+        for level in &mut self.grammar.levels {
+            level.rebuild_index();
+        }
         let mut e_norms: Vec<f64> = Vec::with_capacity(corpus.len());
         let mut level_e_norms_vecs: Vec<Vec<f64>> = Vec::new();
 

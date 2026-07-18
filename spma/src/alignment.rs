@@ -222,7 +222,7 @@ mod tests {
     use super::*;
     use crate::beam::{beam_search, MatchEvent, RawAlignment};
     use crate::intern::Interner;
-    use crate::model::{GapConstraint, Pattern, SymbolRef};
+    use crate::model::{GapConstraint, Pattern, SymbolIndex, SymbolRef};
 
     fn make_grammar(symbols: &[&str]) -> (Grammar, Vec<u32>) {
         let mut interner = Interner::new();
@@ -240,8 +240,8 @@ mod tests {
         let costs = vec![1.0, 1.0, 2.0];
         let new = vec![a, b, c];
         let old_refs = vec![&pat];
-
-        let results = beam_search(&new, &old_refs, 5, &costs);
+        let idx = SymbolIndex::build(&old_refs.iter().map(|p| (*p).clone()).collect::<Vec<_>>());
+        let results = beam_search(&new, &old_refs, &idx, 5, &costs);
         let raw = &results[0];
         let alignment = build_alignment(raw, &["A", "B", "C"], &old_refs, &grammar);
 
@@ -268,8 +268,8 @@ mod tests {
         let costs = vec![1.0; 4];
         let new = vec![a, b, c, d];
         let old_refs = vec![&pat0, &pat1];
-
-        let results = beam_search(&new, &old_refs, 20, &costs);
+        let idx = SymbolIndex::build(&old_refs.iter().map(|p| (*p).clone()).collect::<Vec<_>>());
+        let results = beam_search(&new, &old_refs, &idx, 20, &costs);
         let raw = &results[0];
         let alignment = build_alignment(raw, &["A", "B", "C", "D"], &old_refs, &grammar);
 
@@ -289,8 +289,8 @@ mod tests {
         let costs = vec![1.0, 1.0, 1.0];
         let new = vec![a, ids[1], c];
         let old_refs = vec![&pat];
-
-        let results = beam_search(&new, &old_refs, 5, &costs);
+        let idx = SymbolIndex::build(&old_refs.iter().map(|p| (*p).clone()).collect::<Vec<_>>());
+        let results = beam_search(&new, &old_refs, &idx, 5, &costs);
         let raw = &results[0];
         let alignment = build_alignment(raw, &["A", "B", "C"], &old_refs, &grammar);
 
@@ -317,8 +317,8 @@ mod tests {
         let costs = vec![1.0, 1.0];
         let new = vec![a, b];
         let old_refs = vec![&pat];
-
-        let results = beam_search(&new, &old_refs, 5, &costs);
+        let idx = SymbolIndex::build(&old_refs.iter().map(|p| (*p).clone()).collect::<Vec<_>>());
+        let results = beam_search(&new, &old_refs, &idx, 5, &costs);
         let raw = &results[0];
         let alignment = build_alignment(raw, &["A", "B"], &old_refs, &grammar);
 
@@ -393,7 +393,8 @@ mod tests {
         let costs = vec![1.0; 4];
         let new = vec![a, b, c, d];
         let old_refs = vec![&p0, &p1];
-        let results = beam_search(&new, &old_refs, 20, &costs);
+        let idx = SymbolIndex::build(&old_refs.iter().map(|p| (*p).clone()).collect::<Vec<_>>());
+        let results = beam_search(&new, &old_refs, &idx, 20, &costs);
         let alignment = build_alignment(&results[0], &["A", "B", "C", "D"], &old_refs, &grammar);
         assert_eq!(alignment.rows.len(), 2);
         let ids_used: std::collections::HashSet<u32> =
@@ -459,7 +460,8 @@ mod tests {
         let costs = vec![1.0; 3];
         let new = vec![a, b, c];
         let old_refs = vec![&p0];
-        let results = beam_search(&new, &old_refs, 10, &costs);
+        let idx = SymbolIndex::build(&old_refs.iter().map(|p| (*p).clone()).collect::<Vec<_>>());
+        let results = beam_search(&new, &old_refs, &idx, 10, &costs);
         let alignment = build_alignment(&results[0], &["A", "B", "C"], &old_refs, &grammar);
         assert!(
             alignment.rows[0].fully_matched,
@@ -535,7 +537,8 @@ mod tests {
         let costs = vec![1.0; 4];
         let new = vec![a, b, c, d];
         let old_refs = vec![&p0, &p1];
-        let results = beam_search(&new, &old_refs, 20, &costs);
+        let idx = SymbolIndex::build(&old_refs.iter().map(|p| (*p).clone()).collect::<Vec<_>>());
+        let results = beam_search(&new, &old_refs, &idx, 20, &costs);
         let alignment = build_alignment(&results[0], &["A", "B", "C", "D"], &old_refs, &grammar);
         let s = alignment.to_string();
         assert!(s.contains('A'));
@@ -566,7 +569,8 @@ mod tests {
         let costs = vec![1.0; 4];
         let new = vec![a, b, c, d];
         let old_refs = vec![&p0, &p1];
-        let results = beam_search(&new, &old_refs, 20, &costs);
+        let idx = SymbolIndex::build(&old_refs.iter().map(|p| (*p).clone()).collect::<Vec<_>>());
+        let results = beam_search(&new, &old_refs, &idx, 20, &costs);
         let alignment = build_alignment(&results[0], &["A", "B", "C", "D"], &old_refs, &grammar);
         assert_eq!(alignment.rows.len(), 2);
         assert_eq!(alignment.rows[0].level, 0);
