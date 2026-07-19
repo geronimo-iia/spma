@@ -48,7 +48,9 @@ Implemented in `src/beam.rs`. One New pattern aligned against all Old patterns s
 
 **Inter-pattern ordering constraint**: the first symbol of a new Old pattern must begin at a New position `>= max_covered_new`. Prevents mid-stream interleaving; does not detect full-sequence reorderings — see [docs/known-limitations.md](known-limitations.md).
 
-**Match log / MatchArena**: beam search owns a `MatchArena` (flat `Vec<MatchNode>` linked list). Each `PartialAlignment` holds a single `u32` tail index rather than a cloned vec of match events. Forking copies one `u32`. After beam completion, `arena.collect(winning.log_tail)` walks the linked list once to reconstruct all match events for the winning alignment.
+**Match log / MatchArena**: beam search owns a `MatchArena` (flat `Vec<MatchNode>` linked list). Each `PartialAlignment` holds a single `u32` tail index. Forking copies one `u32`. After beam completion, `arena.collect(winning.log_tail)` walks the linked list once to reconstruct all match events for the winning alignment.
+
+**`PartialAlignment` is allocation-free**: cursor state uses a `[u16; MAX_PATS]` fixed array (sentinel `u16::MAX` = not started) and a `[u64; 8]` bitmask for covered positions (512-symbol limit). Clone is a stack memcpy — no heap allocation in the beam inner loop.
 
 **Why not pairwise**: the original implementation matched New against one Old pattern at a time and merged results. This is wrong — SPMA's compression gain comes from using multiple Old patterns to cover different spans of New simultaneously. Pairwise alignment misses cross-pattern coverage and systematically underestimates CD.
 
