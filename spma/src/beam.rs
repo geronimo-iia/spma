@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::model::Pattern;
+use crate::model::{Pattern, SymbolIndex};
 
 // ── MatchEvent / MatchArena ───────────────────────────────────────────────────
 
@@ -158,23 +158,12 @@ pub struct RawAlignment {
 pub fn beam_search(
     new: &[u32],
     old: &[&Pattern],
+    index: &SymbolIndex,
     beam_k: usize,
     costs: &[f64],
 ) -> Vec<RawAlignment> {
     if new.is_empty() {
         return vec![];
-    }
-
-    // For each symbol ID: which (old_idx, old_pos) pairs contain it
-    let mut symbol_to_old: HashMap<u32, Vec<(usize, usize)>> = HashMap::new();
-    for (oi, pat) in old.iter().enumerate() {
-        for (pos, sym_ref) in pat.symbols.iter().enumerate() {
-            let id = match sym_ref {
-                crate::model::SymbolRef::Atom(id) => *id,
-                crate::model::SymbolRef::Pattern(id) => *id,
-            };
-            symbol_to_old.entry(id).or_default().push((oi, pos));
-        }
     }
 
     let mut arena = MatchArena::new();
@@ -187,11 +176,17 @@ pub fn beam_search(
         for candidate in &candidates {
             next_candidates.push(candidate.extend_skip());
 
-            if let Some(matches) = symbol_to_old.get(&sym) {
+            let matches = index.get(sym);
+            if !matches.is_empty() {
                 for &(oi, q) in matches {
-                    if candidate.can_extend(oi, q, p, old) {
-                        next_candidates
-                            .push(candidate.extend_match(oi, q, p, sym_cost, &mut arena));
+                    if candidate.can_extend(oi as usize, q as usize, p, old) {
+                        next_candidates.push(candidate.extend_match(
+                            oi as usize,
+                            q as usize,
+                            p,
+                            sym_cost,
+                            &mut arena,
+                        ));
                     }
                 }
             }
@@ -224,10 +219,15 @@ pub fn beam_search(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Pattern, SymbolRef};
+    use crate::model::{Pattern, SymbolIndex, SymbolRef};
 
     fn contiguous_pattern(id: u32, atoms: &[u32]) -> Pattern {
         Pattern::new_contiguous(id, atoms.iter().map(|&a| SymbolRef::Atom(a)).collect(), 0)
+    }
+
+    fn index_for(patterns: &[&Pattern]) -> SymbolIndex {
+        let owned: Vec<Pattern> = patterns.iter().map(|p| (*p).clone()).collect();
+        SymbolIndex::build(&owned)
     }
 
     #[test]
@@ -280,7 +280,8 @@ mod tests {
         let old: Vec<Pattern> = vec![];
         let old_refs: Vec<&Pattern> = old.iter().collect();
         let costs = vec![1.0, 2.0, 3.0];
-        let results = beam_search(&new, &old_refs, 5, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 5, &costs);
         assert_eq!(results.len(), 1);
         assert!(results[0].covered.iter().all(|&c| !c));
         assert_eq!(results[0].cd, 0.0);
@@ -292,7 +293,8 @@ mod tests {
         let p0 = contiguous_pattern(0, &[0u32]);
         let old_refs = vec![&p0];
         let costs = vec![2.0, 3.0];
-        let results = beam_search(&new, &old_refs, 5, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 5, &costs);
         assert!(!results.is_empty());
         let best = &results[0];
         assert!(best.covered[0]);
@@ -306,7 +308,8 @@ mod tests {
         let p0 = contiguous_pattern(0, &[0u32, 2u32]);
         let old_refs = vec![&p0];
         let costs = vec![1.0, 1.0, 1.0];
-        let results = beam_search(&new, &old_refs, 10, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 10, &costs);
         let best = &results[0];
         assert!(
             !best.covered[2],
@@ -321,7 +324,8 @@ mod tests {
         let p0 = contiguous_pattern(0, &[0u32, 1u32]);
         let old_refs = vec![&p0];
         let costs = vec![1.0, 1.0, 1.0];
-        let results = beam_search(&new, &old_refs, 10, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 10, &costs);
         let best = &results[0];
         assert!(best.covered[0], "A at new[0] should be covered");
         assert!(best.covered[1], "B at new[1] should be covered");
@@ -336,7 +340,8 @@ mod tests {
         let p1 = contiguous_pattern(1, &[2u32, 3u32]);
         let old_refs = vec![&p0, &p1];
         let costs = vec![1.0, 1.0, 1.0, 1.0];
-        let results = beam_search(&new, &old_refs, 20, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 20, &costs);
         let best = &results[0];
         assert_eq!(
             best.e_cost, 0.0,
@@ -353,7 +358,8 @@ mod tests {
         let p1 = contiguous_pattern(1, &[2u32, 3u32]);
         let old_refs = vec![&p0, &p1];
         let costs = vec![1.0, 1.0, 1.0, 1.0];
-        let results = beam_search(&new, &old_refs, 20, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 20, &costs);
         let best = &results[0];
         assert!(
             best.e_cost > 0.0,
@@ -369,7 +375,8 @@ mod tests {
         let p0 = contiguous_pattern(0, &[0u32]);
         let old_refs = vec![&p0];
         let costs = vec![1.0, 1.0];
-        let results = beam_search(&new, &old_refs, 10, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 10, &costs);
         let best = &results[0];
         assert!(best.covered[0], "A at new[0] should be covered");
         assert!(!best.covered[1], "B at new[1] should not be covered");
@@ -398,7 +405,8 @@ mod tests {
         let p0 = gap_pattern(0, &[0u32, 2u32], 2);
         let old_refs = vec![&p0];
         let costs = vec![1.0, 1.0, 1.0];
-        let results = beam_search(&new, &old_refs, 10, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 10, &costs);
         let best = &results[0];
         assert!(best.covered[0], "A at new[0] must be covered");
         assert!(
@@ -419,7 +427,8 @@ mod tests {
         let p0 = gap_pattern(0, &[0u32, 4u32], 2);
         let old_refs = vec![&p0];
         let costs = vec![1.0; 5];
-        let results = beam_search(&new, &old_refs, 10, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 10, &costs);
         let best = &results[0];
         assert!(
             !best.covered[4] || !best.covered[0],
@@ -437,7 +446,8 @@ mod tests {
         let p0 = gap_pattern(0, &[0u32, 2u32], 2);
         let old_refs = vec![&p0];
         let costs = vec![1.0; 3];
-        let results = beam_search(&new, &old_refs, 10, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 10, &costs);
         let best = &results[0];
         // A at new[1] starts a fresh match (old_pos=0), B at new[0] can't follow
         // So at most one of A/B is covered (A alone from a single-symbol perspective)
@@ -452,7 +462,8 @@ mod tests {
         let p0 = contiguous_pattern(0, &[0u32, 1u32]);
         let old_refs = vec![&p0];
         let costs = vec![1.0, 2.0];
-        let results = beam_search(&new, &old_refs, 5, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 5, &costs);
         let best = &results[0];
         assert_eq!(best.match_log.len(), 2);
         assert_eq!(best.match_log[0].new_pos, 0);
@@ -464,7 +475,8 @@ mod tests {
     // Scenarios 1-7: integration-level beam correctness (migrated from tests/beam_correctness.rs)
 
     fn best_result(new: &[u32], patterns: &[&Pattern], k: usize, costs: &[f64]) -> RawAlignment {
-        let mut results = beam_search(new, patterns, k, costs);
+        let idx = index_for(patterns);
+        let mut results = beam_search(new, patterns, &idx, k, costs);
         results.sort_by(|a, b| {
             b.cd.partial_cmp(&a.cd)
                 .unwrap_or(std::cmp::Ordering::Equal)
