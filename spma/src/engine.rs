@@ -1,5 +1,6 @@
 // Phase 1d — see docs/grammar-spec.md, docs/roadmap.md
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{self, Read as IoRead, Write as IoWrite};
 
@@ -8,6 +9,13 @@ use rayon::prelude::*;
 use crate::alignment::{build_alignment, Alignment};
 use crate::beam::{beam_search, RawAlignment};
 use crate::model::{Grammar, GrammarLevel, Pattern, SymbolRef};
+
+// ── Thread-local reusable buffers for infer hot path ─────────────────────────
+
+thread_local! {
+    static PID_FREQ_BUF: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    static PID_COSTS_BUF: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
+}
 
 // ── Public result types ───────────────────────────────────────────────────────
 
@@ -725,43 +733,62 @@ impl Spma {
                 .map(|p| p.id as usize + 1)
                 .max()
                 .unwrap_or(1);
-            let mut pid_freq: Vec<u32> = vec![0u32; max_pid];
-            for &pid in &pid_seq {
-                if (pid as usize) < max_pid {
-                    pid_freq[pid as usize] += 1;
-                }
-            }
+            let max_ref = pid_seq.iter().map(|&id| id as usize + 1).max().unwrap_or(1);
+            let buf_len = max_ref.max(max_pid);
+            let fallback_pid = level_fallback_costs[level - 1];
             let total_f = total_pid.max(1) as f64;
             let log2_total = total_f.log2();
-            let pid_costs: Vec<f64> = (0..max_pid)
-                .map(|id| {
-                    let freq = pid_freq[id].max(1);
-                    -((freq as f64).log2() - log2_total)
-                })
-                .collect();
 
-            let raw_level_cost: f64 = pid_seq
-                .iter()
-                .map(|&id| pid_costs.get(id as usize).copied().unwrap_or(1.0))
-                .sum();
+            // Reuse thread-local buffers — no allocation per sequence
+            let raw_level_cost: f64 = PID_FREQ_BUF.with(|freq_cell| {
+                PID_COSTS_BUF.with(|costs_cell| {
+                    let mut pid_freq = freq_cell.borrow_mut();
+                    let mut pid_costs_ext = costs_cell.borrow_mut();
+
+                    // grow-only resize; fill active range with zero / fallback
+                    pid_freq.resize(buf_len, 0u32);
+                    pid_costs_ext.resize(buf_len, fallback_pid);
+
+                    // zero out active freq range, then accumulate
+                    pid_freq[..buf_len].fill(0);
+                    for &pid in &pid_seq {
+                        if (pid as usize) < buf_len {
+                            pid_freq[pid as usize] += 1;
+                        }
+                    }
+
+                    // fill costs for known pids; fill fallback for the rest
+                    for id in 0..max_pid {
+                        let freq = pid_freq[id].max(1);
+                        pid_costs_ext[id] = -((freq as f64).log2() - log2_total);
+                    }
+                    for id in max_pid..buf_len {
+                        pid_costs_ext[id] = fallback_pid;
+                    }
+
+                    pid_seq
+                        .iter()
+                        .map(|&id| pid_costs_ext.get(id as usize).copied().unwrap_or(1.0))
+                        .sum()
+                })
+            });
 
             let level_patterns: Vec<&Pattern> =
                 self.grammar.levels[level].patterns.iter().collect();
             let level_index = &self.grammar.levels[level].symbol_index;
 
-            // Extend pid_costs to cover all pattern IDs referenced
-            let max_ref = pid_seq.iter().map(|&id| id as usize + 1).max().unwrap_or(1);
-            let mut pid_costs_ext = pid_costs.clone();
-            let fallback_pid = level_fallback_costs[level - 1];
-            pid_costs_ext.resize(max_ref.max(pid_costs_ext.len()), fallback_pid);
+            // pid_costs_ext already sized to buf_len in the thread-local; re-borrow for beam_search
+            let level_results = PID_COSTS_BUF.with(|costs_cell| {
+                let pid_costs_ext = costs_cell.borrow();
+                beam_search(
+                    &pid_seq,
+                    &level_patterns,
+                    level_index,
+                    self.beam_k,
+                    &pid_costs_ext[..buf_len],
+                )
+            });
 
-            let level_results = beam_search(
-                &pid_seq,
-                &level_patterns,
-                level_index,
-                self.beam_k,
-                &pid_costs_ext,
-            );
             let best_level = level_results.into_iter().next();
             let lc = best_level
                 .as_ref()
