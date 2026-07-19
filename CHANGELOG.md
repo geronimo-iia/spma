@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-07-19
+
+### Added
+
+- `spma` crate: `README.md` with install, quickstart, and key types — now shown on crates.io
+
+### Fixed
+
+- `spma/Cargo.toml`: added `readme = "README.md"` field (crates.io had no README for v0.2.0)
+
 ## [0.2.0] — 2026-07-19
 
 ### Added

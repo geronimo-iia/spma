@@ -130,48 +130,9 @@ The CLI validates automatically and exits with a clear error message. The lib fu
 
 Runnable examples covering golden path, save/load, order detection, and threshold tuning — see [examples/README.md](examples/README.md).
 
-## CLI quickstart
+## CLI
 
-```sh
-cargo install spma-cli
-```
-
-```sh
-# Train
-spma train --corpus normal.txt --output model.json
-
-# Infer (exits 1 if any sequence is anomalous)
-spma infer --model model.json --input sequences.txt
-spma infer --model model.json --json < sequences.txt
-
-# Extend existing model with new sequences (no cold start)
-spma retrain --model model.json --corpus new_normal.txt
-
-# Refit e_distribution without re-training
-spma recalibrate --model model.json --corpus new_normal.txt
-
-# Corpus and sequences are validated automatically — sequences > 512 symbols are rejected:
-# Error: corpus validation failed: sequence 3 has 513 symbols (limit: 512)
-
-# Inspect grammar
-spma grammar --model model.json
-spma grammar --model model.json --json --level 0
-```
-
-Input format: one sequence per line, tokens space-separated.
-
-```
-TRIP BREAKER_OPEN UNDERVOLTAGE BACKUP_RELAY
-TRIP BREAKER_OPEN OVERCURRENT  BACKUP_RELAY
-```
-
-### Per-level anomaly gates
-
-Flag sequences that look normal at the atom level but violate higher-level composition — e.g. correct events in wrong order.
-
-```sh
-spma infer --model model.json --level-threshold 0:0.2 --level-threshold 1:0.5
-```
+For the command-line interface: `cargo install spma-cli`
 
 ## How it works
 
@@ -183,11 +144,11 @@ spma infer --model model.json --level-threshold 0:0.2 --level-threshold 1:0.5
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — scoring objective, beam search, learning loop
-- [Grammar model](docs/grammar-spec.md) — data model, GapConstraint, what was excluded and why
-- [Scoring](docs/scoring.md) — E_norm, threshold semantics, per-level calibration
-- [Performance](docs/performance.md) — current optimisations and improvement roadmap
-- [Known limitations](docs/known-limitations.md) — what the current implementation cannot do
+- [Architecture](https://github.com/geronimo-iia/spma/blob/main/docs/architecture.md) — scoring objective, beam search, learning loop
+- [Grammar model](https://github.com/geronimo-iia/spma/blob/main/docs/grammar-spec.md) — data model, GapConstraint, what was excluded and why
+- [Scoring](https://github.com/geronimo-iia/spma/blob/main/docs/scoring.md) — E_norm, threshold semantics, per-level calibration
+- [Performance](https://github.com/geronimo-iia/spma/blob/main/docs/performance.md) — current optimisations and improvement roadmap
+- [Known limitations](https://github.com/geronimo-iia/spma/blob/main/docs/known-limitations.md) — what the current implementation cannot do
 
 ## Benchmark results
 
