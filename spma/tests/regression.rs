@@ -32,7 +32,7 @@ fn gap_patterns_dont_break_contiguous_inference() {
         "gap-enabled: known sequence must not be anomaly"
     );
     assert!(
-        result_gap.alignment.rows.len() >= 1,
+        !result_gap.alignment.rows.is_empty(),
         "gap-enabled: alignment must have at least 1 row, got {}",
         result_gap.alignment.rows.len()
     );

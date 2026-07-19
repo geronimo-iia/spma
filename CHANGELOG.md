@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-07-19
+
+### Changed
+
+- CI: poll crates.io index (up to 5 min) before publishing `spma-cli`; replaces fragile `sleep 30`
+- CI: install `jq` explicitly; fix version extraction to use `select(.name=="spma")`; add `User-Agent` header to crates.io poll request
+
+### Fixed
+
+- Clippy: `len() >= 1` → `!is_empty()` in engine tests and integration tests
+- Clippy: `iter().copied().collect()` → `to_vec()` in engine tests
+- Clippy: elide explicit lifetime in `tests/training.rs` helper
+
 ## [0.2.1] — 2026-07-19
 
 ### Added

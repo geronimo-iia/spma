@@ -1,6 +1,6 @@
 [package]
 name = "spma"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.75"
 description = "Unsupervised anomaly detection for discrete event sequences via MDL-based grammar induction (SP Multiple Alignment)"

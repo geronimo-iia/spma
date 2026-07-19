@@ -2,7 +2,7 @@ use spma::{model::SymbolRef, Spma};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-fn repeat<'a>(seq: Vec<&'a str>, n: usize) -> Vec<Vec<&'a str>> {
+fn repeat(seq: Vec<&str>, n: usize) -> Vec<Vec<&str>> {
     vec![seq; n]
 }
 
@@ -15,7 +15,7 @@ fn repeated_sequences_grammar_nonempty_pattern_covers() {
     spma.train(&corpus);
 
     assert!(
-        spma.grammar().levels.len() >= 1,
+        !spma.grammar().levels.is_empty(),
         "expected at least 1 grammar level, got {}",
         spma.grammar().levels.len()
     );

@@ -1172,7 +1172,7 @@ mod tests {
         spma.train(&corpus);
         let result = spma.infer(&seq);
         assert!(
-            result.alignment.rows.len() >= 1,
+            !result.alignment.rows.is_empty(),
             "alignment must have at least 1 row when patterns match"
         );
     }
@@ -1404,8 +1404,7 @@ mod tests {
         let atom_costs_before = spma.atom_costs.clone();
         let interner_len_before = spma.grammar.interner.len();
 
-        let corpus_refs: Vec<Vec<&str>> =
-            corpus.iter().map(|s| s.iter().copied().collect()).collect();
+        let corpus_refs: Vec<Vec<&str>> = corpus.iter().map(|s| s.to_vec()).collect();
         spma.recalibrate(&corpus_refs);
 
         let levels_after: Vec<usize> = spma
@@ -1450,8 +1449,7 @@ mod tests {
         let reduced_count = spma.grammar.levels[0].patterns.len();
         assert_eq!(reduced_count, original_count - 1);
 
-        let corpus_refs: Vec<Vec<&str>> =
-            corpus.iter().map(|s| s.iter().copied().collect()).collect();
+        let corpus_refs: Vec<Vec<&str>> = corpus.iter().map(|s| s.to_vec()).collect();
         spma.recalibrate(&corpus_refs);
 
         assert_eq!(

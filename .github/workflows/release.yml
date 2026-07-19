@@ -91,12 +91,15 @@ jobs:
       - name: Publish spma to crates.io
         run: cargo publish --locked -p spma --token ${{ secrets.CARGO_TOKEN }}
 
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
       - name: Wait for spma to be indexed on crates.io
         run: |
-          VERSION=$(cargo metadata --no-deps --format-version 1 -p spma | jq -r '.packages[0].version')
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="spma") | .version')
           echo "Waiting for spma v${VERSION} to appear in crates.io index..."
           for i in $(seq 1 20); do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/spma/${VERSION}")
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "User-Agent: spma-release-workflow" "https://crates.io/api/v1/crates/spma/${VERSION}")
             if [ "$STATUS" = "200" ]; then
               echo "spma v${VERSION} is available."
               break
