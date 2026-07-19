@@ -254,7 +254,10 @@ fn recalibrate_preserves_threshold() {
 
     spma.set_anomaly_threshold(0.42);
     let before = spma.grammar().e_distribution.threshold;
-    assert!((before - 0.42).abs() < 1e-12, "threshold must be 0.42 before recalibrate");
+    assert!(
+        (before - 0.42).abs() < 1e-12,
+        "threshold must be 0.42 before recalibrate"
+    );
 
     let recal = corpus(vec!["A", "B", "C"], 5);
     spma.recalibrate(&recal);
@@ -275,13 +278,27 @@ fn recalibrate_preserves_level_thresholds() {
     spma.train(&c);
 
     spma.set_level_threshold(1, 0.77);
-    let before = spma.grammar().e_distribution.level_thresholds.get(1).copied();
-    assert_eq!(before, Some(0.77), "level_thresholds[1] must be 0.77 before recalibrate");
+    let before = spma
+        .grammar()
+        .e_distribution
+        .level_thresholds
+        .get(1)
+        .copied();
+    assert_eq!(
+        before,
+        Some(0.77),
+        "level_thresholds[1] must be 0.77 before recalibrate"
+    );
 
     let recal = corpus(vec!["A", "B", "C", "A", "B", "C"], 5);
     spma.recalibrate(&recal);
 
-    let after = spma.grammar().e_distribution.level_thresholds.get(1).copied();
+    let after = spma
+        .grammar()
+        .e_distribution
+        .level_thresholds
+        .get(1)
+        .copied();
     assert_eq!(
         after,
         Some(0.77),
@@ -324,10 +341,7 @@ fn recalibrate_rebuilds_distribution() {
 // Scenario 32 — validate_corpus_accepts_short_sequences
 #[test]
 fn validate_corpus_accepts_short_sequences() {
-    let corpus = vec![
-        vec!["A", "B", "C"],
-        vec!["X", "Y"],
-    ];
+    let corpus = vec![vec!["A", "B", "C"], vec!["X", "Y"]];
     assert!(spma::validate_corpus(&corpus).is_ok());
 }
 
@@ -335,12 +349,12 @@ fn validate_corpus_accepts_short_sequences() {
 #[test]
 fn validate_corpus_rejects_overlong_sequence() {
     let long_seq: Vec<&str> = vec!["A"; 513];
-    let corpus = vec![
-        vec!["A", "B"],
-        long_seq,
-    ];
+    let corpus = vec![vec!["A", "B"], long_seq];
     let result = spma::validate_corpus(&corpus);
-    assert!(result.is_err(), "validate_corpus must reject sequences > 512 symbols");
+    assert!(
+        result.is_err(),
+        "validate_corpus must reject sequences > 512 symbols"
+    );
     let msg = result.unwrap_err();
     assert!(
         msg.contains("513"),
@@ -356,7 +370,10 @@ fn validate_corpus_rejects_overlong_sequence() {
 #[test]
 fn validate_sequence_accepts_normal() {
     let seq = vec!["A"; 512];
-    assert!(spma::validate_sequence(&seq).is_ok(), "512 symbols must be accepted");
+    assert!(
+        spma::validate_sequence(&seq).is_ok(),
+        "512 symbols must be accepted"
+    );
 }
 
 // Scenario 35 — validate_sequence_rejects_overlong
@@ -364,7 +381,10 @@ fn validate_sequence_accepts_normal() {
 fn validate_sequence_rejects_overlong() {
     let seq = vec!["A"; 513];
     let result = spma::validate_sequence(&seq);
-    assert!(result.is_err(), "validate_sequence must reject sequences > 512 symbols");
+    assert!(
+        result.is_err(),
+        "validate_sequence must reject sequences > 512 symbols"
+    );
     let msg = result.unwrap_err();
     assert!(
         msg.contains("513"),
@@ -379,7 +399,10 @@ fn validate_sequence_rejects_overlong() {
 // Scenario 36 — validate_sequence_accepts_empty
 #[test]
 fn validate_sequence_accepts_empty() {
-    assert!(spma::validate_sequence(&[]).is_ok(), "empty sequence must be accepted");
+    assert!(
+        spma::validate_sequence(&[]).is_ok(),
+        "empty sequence must be accepted"
+    );
 }
 
 // Scenario 31 — infer_buffer_reuse_stable_across_sequences

@@ -37,7 +37,7 @@ After each fix, re-profiled to confirm:
 **H — Vec cursors in beam.rs**
 - Removed dead `old_cursors: HashMap<usize,usize>` (written but never read)
 - `new_cursors: HashMap<usize,usize>` → `Vec<u16>` with sentinel `u16::MAX`
-- `covered_new: Vec<bool>` → `[u64; 8]` bitmask (512-symbol limit, HDFS max ~298)
+- `covered_new: Vec<bool>` → `[u64; 8]` bitmask (512-symbol limit)
 - Clone is now memcpy — no heap allocation in beam inner loop
 
 **I — log2 hoisting and pid_freq Vec in engine.rs**
@@ -50,8 +50,6 @@ After each fix, re-profiled to confirm:
 Thread-local RefCell buffers caused 88.3% `LocalKey::with` overhead on macOS. Reverted in favour of grow-only Vecs per `infer` call.
 
 ## Potential improvements
-
-Accept only if target metric improves ≥2x.
 
 **B — Structure of Arrays layout**
 Replace AoS with flat Vecs + offset table. Expected 3–5x on cost computation and frequency updates.
