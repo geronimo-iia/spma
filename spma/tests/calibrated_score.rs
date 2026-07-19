@@ -364,7 +364,22 @@ fn validate_sequence_accepts_normal() {
 fn validate_sequence_rejects_overlong() {
     let seq = vec!["A"; 513];
     let result = spma::validate_sequence(&seq);
-    assert!(result.is_err());
+    assert!(result.is_err(), "validate_sequence must reject sequences > 512 symbols");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("513"),
+        "error message must mention the offending length, got: {msg}"
+    );
+    assert!(
+        msg.contains("512"),
+        "error message must mention the limit, got: {msg}"
+    );
+}
+
+// Scenario 36 — validate_sequence_accepts_empty
+#[test]
+fn validate_sequence_accepts_empty() {
+    assert!(spma::validate_sequence(&[]).is_ok(), "empty sequence must be accepted");
 }
 
 // Scenario 31 — infer_buffer_reuse_stable_across_sequences
