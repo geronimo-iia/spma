@@ -239,6 +239,32 @@ mod tests {
     use crate::model::{Pattern, SymbolIndex, SymbolRef};
 
     #[test]
+    #[should_panic(expected = "exceeds 512-symbol bitmask limit")]
+    fn sequence_too_long_panics() {
+        // 513 symbols — must panic with bitmask limit message
+        let new: Vec<u32> = vec![0u32; 513];
+        let costs = vec![1.0f64; 1];
+        let old: Vec<Pattern> = vec![];
+        let old_refs: Vec<&Pattern> = old.iter().collect();
+        let idx = SymbolIndex::build(&old);
+        let _ = beam_search(&new, &old_refs, &idx, 5, &costs);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds 128-pattern cursor limit")]
+    fn too_many_patterns_panics() {
+        // 129 patterns — must panic with cursor limit message
+        let new = vec![0u32];
+        let costs = vec![1.0f64; 1];
+        let patterns: Vec<Pattern> = (0..129)
+            .map(|i| Pattern::new_contiguous(i as u32, vec![SymbolRef::Atom(0)], 0))
+            .collect();
+        let old_refs: Vec<&Pattern> = patterns.iter().collect();
+        let idx = SymbolIndex::build(&patterns);
+        let _ = beam_search(&new, &old_refs, &idx, 5, &costs);
+    }
+
+    #[test]
     fn bitmask_coverage_round_trip() {
         let mut mask = [0u64; 8];
         // set bits 0, 2, 5
