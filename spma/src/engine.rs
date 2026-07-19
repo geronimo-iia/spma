@@ -678,6 +678,17 @@ impl Spma {
         // Seed with best_raw.match_log — level=1 reuses it directly, no redundant beam call.
         let mut prev_match_log: Vec<crate::beam::MatchEvent> = best_raw.match_log;
 
+        let level_fallback_costs: Vec<f64> = (1..self.grammar.levels.len())
+            .map(|lv| {
+                let n = self.grammar.levels[lv - 1].patterns.len();
+                if n > 1 {
+                    (n as f64).log2()
+                } else {
+                    1.0
+                }
+            })
+            .collect();
+
         for level in 1..self.grammar.levels.len() {
             let prev_patterns: Vec<&Pattern> =
                 self.grammar.levels[level - 1].patterns.iter().collect();
@@ -707,7 +718,6 @@ impl Spma {
             }
 
             // Frequency-based costs for this level's pattern IDs
-            let n_prev_pats = self.grammar.levels[level - 1].patterns.len();
             let total_pid: u32 = pid_seq.len() as u32;
             let mut pid_freq: HashMap<u32, u32> = HashMap::new();
             for &pid in &pid_seq {
@@ -719,10 +729,12 @@ impl Spma {
                 .map(|p| p.id as usize + 1)
                 .max()
                 .unwrap_or(1);
+            let total_f = total_pid.max(1) as f64;
+            let log2_total = total_f.log2();
             let pid_costs: Vec<f64> = (0..max_pid as u32)
                 .map(|id| {
                     let freq = pid_freq.get(&id).copied().unwrap_or(1);
-                    -((freq as f64 / total_pid.max(1) as f64).log2())
+                    -((freq as f64).log2() - log2_total)
                 })
                 .collect();
 
@@ -738,11 +750,7 @@ impl Spma {
             // Extend pid_costs to cover all pattern IDs referenced
             let max_ref = pid_seq.iter().map(|&id| id as usize + 1).max().unwrap_or(1);
             let mut pid_costs_ext = pid_costs.clone();
-            let fallback_pid = if n_prev_pats > 1 {
-                (n_prev_pats as f64).log2()
-            } else {
-                1.0
-            };
+            let fallback_pid = level_fallback_costs[level - 1];
             pid_costs_ext.resize(max_ref.max(pid_costs_ext.len()), fallback_pid);
 
             let level_results = beam_search(
