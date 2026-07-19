@@ -2,8 +2,6 @@
 
 Guidance for agentic workers. Read this before touching any file.
 
----
-
 ## Workspace layout
 
 ```
@@ -23,13 +21,10 @@ spma/                        ← workspace root (run cargo/git from here)
     scoring.md               ← E_norm, threshold semantics, per-level calibration
     performance.md           ← profiling results, applied optimizations, remaining work
     known-limitations.md     ← reordering detection, F1 ceiling
-    superpowers/plans/       ← implementation plans (checkbox format)
 ```
 
 The library crate is `spma/` (subdirectory), not the workspace root. All
 `cargo` commands that target the library use `-p spma`. The CLI is `-p spma-cli`.
-
----
 
 ## How to verify your work
 
@@ -50,8 +45,6 @@ cargo build --release 2>&1 | grep "^error"
 All tests must pass before committing. Zero clippy warnings is a hard
 requirement — the workspace has `[lints.clippy] all = "warn"`.
 
----
-
 ## Module dependency order
 
 ```
@@ -65,8 +58,6 @@ lib.rs    ← engine.rs, model.rs, intern.rs
 `beam.rs` must NOT import from `engine.rs` — circular. If a constant or type
 needs to be shared between them, define it in `beam.rs` and re-export from
 `engine.rs`. See `MAX_BITMASK_SYMBOLS` as the established pattern.
-
----
 
 ## Hard constraints — do not violate
 
@@ -99,8 +90,6 @@ conflate them.
 `e_distribution.threshold` and `level_thresholds` across the refit. Follow the
 same save/restore pattern if you add any code that calls `EDistribution::fit`.
 
----
-
 ## Sharp edges that cause silent wrong behavior
 
 **`GAP_MARKER = u32::MAX`**: used as a sentinel in ngram encoding
@@ -122,23 +111,6 @@ grammar lookup.
 during MDL gating. Do not replace with beam search — the DP gives the exact
 minimum encoding cost, which beam search does not guarantee.
 
----
-
-## Plans
-
-Plans live in `docs/superpowers/plans/` as Markdown files with checkbox steps.
-When a plan is fully implemented, delete the file — completed plans belong in
-git history, not the working tree.
-
-Before executing a plan, verify:
-1. All file paths in the plan match the actual workspace layout (`spma/src/`,
-   not `src/` or `spma/spma/src/`)
-2. `git add` paths are relative to workspace root (`spma/src/beam.rs`, not
-   `src/beam.rs`)
-3. No step imports from a module that depends on the importing module
-
----
-
 ## Commit conventions
 
 ```
@@ -154,8 +126,6 @@ Scope is the primary file or subsystem: `beam`, `engine`, `model`, `alignment`,
 `cli`, `intern`. One logical change per commit. Tests for a change go in the
 same commit as the change.
 
----
-
 ## Intentionally deferred (post v0.2)
 
 Do not implement these without an explicit plan:
@@ -163,10 +133,6 @@ Do not implement these without an explicit plan:
 - Structure-of-Arrays layout for `PatternStore` (perf item B)
 - Parallel training (perf item D)
 - SIMD symbol comparison (perf item E)
-- Examples `fault_detection.rs`, `ordered_sequences.rs` — doc comments match
-  current output; run example before changing expected output in doc comments
-
----
 
 ## Key numbers to know
 
