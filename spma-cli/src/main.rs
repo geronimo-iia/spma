@@ -520,6 +520,9 @@ fn main() -> Result<()> {
                 .map(|seq| seq.iter().map(String::as_str).collect())
                 .collect();
 
+            spma::validate_corpus(&corpus_refs)
+                .map_err(|e| anyhow::anyhow!("corpus validation failed: {e}"))?;
+
             let mut spma = Spma::new(beam);
             spma.set_max_induced_gap(max_gap);
             spma.train(&corpus_refs);
@@ -575,6 +578,12 @@ fn main() -> Result<()> {
                 .into_iter()
                 .filter(|l| !l.is_empty())
                 .collect();
+
+            for (i, line) in lines.iter().enumerate() {
+                let tokens: Vec<&str> = line.split_whitespace().collect();
+                spma::validate_sequence(&tokens)
+                    .map_err(|e| anyhow::anyhow!("line {}: {e}", i + 1))?;
+            }
 
             let results: Vec<(Vec<String>, spma::engine::InferResult)> = lines
                 .par_iter()
@@ -641,6 +650,9 @@ fn main() -> Result<()> {
                 .map(|seq| seq.iter().map(String::as_str).collect())
                 .collect();
 
+            spma::validate_corpus(&corpus_refs)
+                .map_err(|e| anyhow::anyhow!("corpus validation failed: {e}"))?;
+
             let levels_before = spma.grammar().levels.len();
             spma.retrain(&corpus_refs);
 
@@ -687,6 +699,9 @@ fn main() -> Result<()> {
                 .iter()
                 .map(|seq| seq.iter().map(String::as_str).collect())
                 .collect();
+
+            spma::validate_corpus(&corpus_refs)
+                .map_err(|e| anyhow::anyhow!("corpus validation failed: {e}"))?;
 
             spma.recalibrate(&corpus_refs);
 
