@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-07-19
+
+### Fixed
+
+- `spma-cli/Cargo.toml`: add `version = "0.2.3"` to `spma` path dependency — required by crates.io publish
+
 ## [0.2.2] — 2026-07-19
 
 ### Changed

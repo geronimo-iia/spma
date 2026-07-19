@@ -1,6 +1,6 @@
 [package]
 name = "spma-cli"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 rust-version = "1.75"
 description = "CLI for spma — unsupervised anomaly detection for discrete event sequences"
@@ -14,7 +14,7 @@ name = "spma"
 path = "src/main.rs"
 
 [dependencies]
-spma = { path = "../spma" }
+spma = { path = "../spma", version = "0.2.3" }
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 rayon = "1"
