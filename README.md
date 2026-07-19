@@ -151,6 +151,9 @@ spma retrain --model model.json --corpus new_normal.txt
 # Refit e_distribution without re-training
 spma recalibrate --model model.json --corpus new_normal.txt
 
+# Corpus and sequences are validated automatically — sequences > 512 symbols are rejected:
+# Error: corpus validation failed: sequence 3 has 513 symbols (limit: 512)
+
 # Inspect grammar
 spma grammar --model model.json
 spma grammar --model model.json --json --level 0
