@@ -193,3 +193,5 @@ spma infer --model model.json --level-threshold 0:0.2 --level-threshold 1:0.5
 ## Benchmark results
 
 For now (2026), validated on LogHub HDFS: Precision=0.973, Recall=0.825, F1=0.893 — trained on 1k normal sequences, no labels, no embeddings, no feature vectors — see [spma-experiments](https://github.com/geronimo-iia/spma-experiments). There is still a lot to explore — broader datasets, deeper comparison, open questions.
+
+**Evaluation note**: results use identifier-based partitioning (log lines grouped by block ID before splitting). Chen et al. 2021 use an 80/20 chronological split with sliding window partitioning. The protocols differ — do not compare these F1 numbers directly against Chen et al. tables.
