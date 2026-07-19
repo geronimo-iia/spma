@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-19
+
 ### Added
 
 - `Spma::retrain` — extends an already-trained model with a new batch of sequences
