@@ -48,7 +48,7 @@ impl MatchArena {
 #[derive(Clone)]
 struct PartialAlignment {
     new_cursors: Vec<u16>, // pattern_idx → new_pos; u16::MAX = absent
-    covered_new: u128,     // bitmask; bit i = new[i] covered
+    covered_new: [u64; 8], // bitmask; bit i = new[i] covered; covers up to 512 symbols
     new_len: usize,        // stored for finalize
     max_covered_new: usize,
     cd: f64,
@@ -57,16 +57,16 @@ struct PartialAlignment {
 
 impl PartialAlignment {
     fn new(new_len: usize, n_pats: usize) -> Self {
-        // assert!, not debug_assert: sequence > 128 would silently set wrong bits
+        // assert!, not debug_assert: sequence > 512 would silently set wrong bits
         assert!(
-            new_len <= 128,
-            "beam_search: sequence length {new_len} exceeds 128-symbol bitmask limit"
+            new_len <= 512,
+            "beam_search: sequence length {new_len} exceeds 512-symbol bitmask limit"
         );
         // Safety: beam_search returns early on empty input before calling new(),
         // so new_len == 0 never reaches this assert.
         Self {
             new_cursors: vec![u16::MAX; n_pats],
-            covered_new: 0u128,
+            covered_new: [0u64; 8],
             new_len,
             max_covered_new: 0,
             cd: 0.0,
@@ -91,7 +91,7 @@ impl PartialAlignment {
             "new_pos {new_pos} overflows u16"
         );
         let mut next = self.clone();
-        next.covered_new |= 1u128 << new_pos;
+        next.covered_new[new_pos / 64] |= 1u64 << (new_pos % 64);
         next.cd += symbol_cost;
         next.new_cursors[old_idx] = new_pos as u16;
         if new_pos > next.max_covered_new {
@@ -139,13 +139,13 @@ impl PartialAlignment {
         let e_cost: f64 = new
             .iter()
             .enumerate()
-            .filter(|&(i, _)| self.covered_new & (1u128 << i) == 0)
+            .filter(|&(i, _)| self.covered_new[i / 64] & (1u64 << (i % 64)) == 0)
             .map(|(_, &id)| costs[id as usize])
             .sum();
         let match_log = arena.collect(self.log_tail);
         // Reconstruct Vec<bool> for RawAlignment (consumed by alignment.rs)
         let covered: Vec<bool> = (0..self.new_len)
-            .map(|i| self.covered_new & (1u128 << i) != 0)
+            .map(|i| self.covered_new[i / 64] & (1u64 << (i % 64)) != 0)
             .collect();
         RawAlignment {
             match_log,
@@ -208,7 +208,11 @@ pub fn beam_search(
         next_candidates.sort_by(|a, b| {
             b.cd.partial_cmp(&a.cd)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| b.covered_new.count_ones().cmp(&a.covered_new.count_ones()))
+                .then_with(|| {
+                    let b_ones: u32 = b.covered_new.iter().map(|w| w.count_ones()).sum();
+                    let a_ones: u32 = a.covered_new.iter().map(|w| w.count_ones()).sum();
+                    b_ones.cmp(&a_ones)
+                })
                 .then_with(|| a.covered_new.cmp(&b.covered_new))
         });
         next_candidates.truncate(beam_k);
@@ -232,16 +236,22 @@ mod tests {
 
     #[test]
     fn bitmask_coverage_round_trip() {
-        let mut mask: u128 = 0;
-        mask |= 1u128 << 0;
-        mask |= 1u128 << 2;
-        mask |= 1u128 << 5;
-        assert!(mask & (1u128 << 0) != 0);
-        assert!(mask & (1u128 << 1) == 0);
-        assert!(mask & (1u128 << 2) != 0);
-        assert!(mask & (1u128 << 5) != 0);
-        assert!(mask & (1u128 << 6) == 0);
-        assert_eq!(mask.count_ones(), 3);
+        let mut mask = [0u64; 8];
+        // set bits 0, 2, 5
+        mask[0] |= 1u64 << 0;
+        mask[0] |= 1u64 << 2;
+        mask[0] |= 1u64 << 5;
+        assert!(mask[0] & (1u64 << 0) != 0);
+        assert!(mask[0] & (1u64 << 1) == 0);
+        assert!(mask[0] & (1u64 << 2) != 0);
+        assert!(mask[0] & (1u64 << 5) != 0);
+        assert!(mask[0] & (1u64 << 6) == 0);
+        let total: u32 = mask.iter().map(|w| w.count_ones()).sum();
+        assert_eq!(total, 3);
+        // test cross-word bit (bit 64 = word 1, bit 0)
+        mask[1] |= 1u64 << 0;
+        let total2: u32 = mask.iter().map(|w| w.count_ones()).sum();
+        assert_eq!(total2, 4);
     }
 
     fn contiguous_pattern(id: u32, atoms: &[u32]) -> Pattern {
