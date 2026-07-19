@@ -719,21 +719,23 @@ impl Spma {
 
             // Frequency-based costs for this level's pattern IDs
             let total_pid: u32 = pid_seq.len() as u32;
-            let mut pid_freq: HashMap<u32, u32> = HashMap::new();
-            for &pid in &pid_seq {
-                *pid_freq.entry(pid).or_insert(0) += 1;
-            }
             let max_pid = self.grammar.levels[level - 1]
                 .patterns
                 .iter()
                 .map(|p| p.id as usize + 1)
                 .max()
                 .unwrap_or(1);
+            let mut pid_freq: Vec<u32> = vec![0u32; max_pid];
+            for &pid in &pid_seq {
+                if (pid as usize) < max_pid {
+                    pid_freq[pid as usize] += 1;
+                }
+            }
             let total_f = total_pid.max(1) as f64;
             let log2_total = total_f.log2();
-            let pid_costs: Vec<f64> = (0..max_pid as u32)
+            let pid_costs: Vec<f64> = (0..max_pid)
                 .map(|id| {
-                    let freq = pid_freq.get(&id).copied().unwrap_or(1);
+                    let freq = pid_freq[id].max(1);
                     -((freq as f64).log2() - log2_total)
                 })
                 .collect();
