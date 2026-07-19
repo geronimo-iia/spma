@@ -827,8 +827,11 @@ impl Spma {
             }
         }
 
+        let threshold = self.grammar.e_distribution.threshold;
+        let level_thresholds = self.grammar.e_distribution.level_thresholds.clone();
         self.grammar.e_distribution =
-            crate::model::EDistribution::fit(e_norms, 0.0, level_e_norms_vecs);
+            crate::model::EDistribution::fit(e_norms, threshold, level_e_norms_vecs);
+        self.grammar.e_distribution.level_thresholds = level_thresholds;
     }
 }
 

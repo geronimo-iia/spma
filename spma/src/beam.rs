@@ -45,11 +45,13 @@ impl MatchArena {
 
 // ── PartialAlignment ──────────────────────────────────────────────────────────
 
+const MAX_PATS: usize = 128;
+
 #[derive(Clone)]
 struct PartialAlignment {
-    new_cursors: Vec<u16>, // pattern_idx → new_pos; u16::MAX = absent
-    covered_new: [u64; 8], // bitmask; bit i = new[i] covered; covers up to 512 symbols
-    new_len: usize,        // stored for finalize
+    new_cursors: [u16; MAX_PATS], // pattern_idx → new_pos; u16::MAX = absent
+    covered_new: [u64; 8],        // bitmask; bit i = new[i] covered; covers up to 512 symbols
+    new_len: usize,               // stored for finalize
     max_covered_new: usize,
     cd: f64,
     log_tail: Option<u32>,
@@ -57,15 +59,17 @@ struct PartialAlignment {
 
 impl PartialAlignment {
     fn new(new_len: usize, n_pats: usize) -> Self {
-        // assert!, not debug_assert: sequence > 512 would silently set wrong bits
+        // assert!, not debug_assert: violations would silently corrupt results
         assert!(
             new_len <= 512,
             "beam_search: sequence length {new_len} exceeds 512-symbol bitmask limit"
         );
-        // Safety: beam_search returns early on empty input before calling new(),
-        // so new_len == 0 never reaches this assert.
+        assert!(
+            n_pats <= MAX_PATS,
+            "beam_search: pattern count {n_pats} exceeds {MAX_PATS}-pattern cursor limit"
+        );
         Self {
-            new_cursors: vec![u16::MAX; n_pats],
+            new_cursors: [u16::MAX; MAX_PATS],
             covered_new: [0u64; 8],
             new_len,
             max_covered_new: 0,
