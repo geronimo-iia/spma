@@ -8,20 +8,31 @@
   without discarding prior grammar; cumulative atom frequencies persisted on `Spma`
   and serialized with the model
 - CLI `retrain` subcommand: `spma retrain --model model.json --corpus new_normal.txt`
+- `validate_corpus(&[Vec<&str>]) -> Result<(), String>` — pre-flight check that all
+  sequences fit within the 512-symbol bitmask limit; returns index + length on first violation
+- `validate_sequence(&[&str]) -> Result<(), String>` — single-sequence variant for infer path
+- `MAX_BITMASK_SYMBOLS: usize` re-exported from lib root (= 512)
+- CLI validates corpus length before `train`, `retrain`, `recalibrate`; validates per-line
+  before `infer` (sequential pass, clean error with line number)
+
+### Fixed
+
+- `Spma::recalibrate`: user-set `threshold` and `level_thresholds` were silently reset to
+  defaults after recalibration; now preserved across the refit
 
 ### Changed
 
-- `Spma::infer`: reuses level-0 `match_log` for level-1 pid_seq extraction; eliminates
-  one redundant `beam_search` call per inference sequence
+- `new_cursors` in beam search: `Vec<u16>` → `[u16; 128]` fixed array — clone is stack
+  memcpy, eliminates heap allocation in beam inner loop (~2.9× wall-time speedup on HDFS
+  446k infer; see docs/performance.md)
 - `GrammarLevel`: `SymbolIndex` inverted index built once per level, eliminates per-call
   `HashMap` rebuild in `beam_search`; not serialized, rebuilt on `load`
+- `Spma::infer`: reuses level-0 `match_log` for level-1 pid_seq extraction; eliminates
+  one redundant `beam_search` call per inference sequence
 - `Spma::load`: rebuilds `SymbolIndex` on each grammar level after deserialization
 - `Spma::recalibrate`: rebuilds `SymbolIndex` on each level before running inference
 - `atom_freq` and `total_symbol_count` fields now `#[serde(default)]` — existing saved
   models load without error
-
-### Changed
-
 - Cargo workspace split: `spma` lib crate (no `anyhow`/`clap`/`mimalloc`) + `spma-cli` bin crate; install with `cargo install spma-cli`
 - `anyhow`, `clap`, `mimalloc` removed from library dependency graph — no longer forced on downstream lib users
 

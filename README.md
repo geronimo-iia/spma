@@ -105,12 +105,27 @@ model.retrain(&new_corpus);
 ```rust
 // Refit e_distribution on a larger normal corpus without retraining the grammar.
 // Useful when you train on a small corpus for speed then collect more normal data.
+// User-set threshold and level_thresholds are preserved across recalibration.
 let new_corpus: Vec<Vec<&str>> = vec![
     vec!["TRIP", "BREAKER_OPEN", "UNDERVOLTAGE", "BACKUP_RELAY"],
     // ... more normal sequences
 ];
 model.recalibrate(&new_corpus);
 ```
+
+## Validate before training
+
+Sequences longer than 512 symbols cannot be processed (bitmask limit). Validate before calling `train`/`retrain`/`recalibrate`:
+
+```rust
+use spma::{validate_corpus, validate_sequence};
+
+validate_corpus(&corpus).map_err(|e| format!("corpus error: {e}"))?;
+// or for a single sequence:
+validate_sequence(&tokens).map_err(|e| format!("sequence error: {e}"))?;
+```
+
+The CLI validates automatically and exits with a clear error message. The lib functions are opt-in — callers control when validation runs.
 
 ## Examples
 
@@ -135,6 +150,9 @@ spma retrain --model model.json --corpus new_normal.txt
 
 # Refit e_distribution without re-training
 spma recalibrate --model model.json --corpus new_normal.txt
+
+# Corpus and sequences are validated automatically — sequences > 512 symbols are rejected:
+# Error: corpus validation failed: sequence 3 has 513 symbols (limit: 512)
 
 # Inspect grammar
 spma grammar --model model.json

@@ -9,6 +9,36 @@ use crate::alignment::{build_alignment, Alignment};
 use crate::beam::{beam_search, RawAlignment};
 use crate::model::{Grammar, GrammarLevel, Pattern, SymbolRef};
 
+pub use crate::beam::MAX_BITMASK_SYMBOLS;
+
+/// Validate all sequences in a corpus fit within beam_search limits.
+/// Returns `Err` with a human-readable message on the first offending sequence.
+pub fn validate_corpus(corpus: &[Vec<&str>]) -> Result<(), String> {
+    for (i, seq) in corpus.iter().enumerate() {
+        if seq.len() > crate::beam::MAX_BITMASK_SYMBOLS {
+            return Err(format!(
+                "sequence {} has {} symbols (limit: {})",
+                i,
+                seq.len(),
+                crate::beam::MAX_BITMASK_SYMBOLS,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a single sequence fits within beam_search limits.
+pub fn validate_sequence(seq: &[&str]) -> Result<(), String> {
+    if seq.len() > crate::beam::MAX_BITMASK_SYMBOLS {
+        return Err(format!(
+            "sequence has {} symbols (limit: {})",
+            seq.len(),
+            crate::beam::MAX_BITMASK_SYMBOLS,
+        ));
+    }
+    Ok(())
+}
+
 // ── Public result types ───────────────────────────────────────────────────────
 
 pub struct InferResult {
@@ -678,6 +708,21 @@ impl Spma {
         // Seed with best_raw.match_log — level=1 reuses it directly, no redundant beam call.
         let mut prev_match_log: Vec<crate::beam::MatchEvent> = best_raw.match_log;
 
+        let level_fallback_costs: Vec<f64> = (1..self.grammar.levels.len())
+            .map(|lv| {
+                let n = self.grammar.levels[lv - 1].patterns.len();
+                if n > 1 {
+                    (n as f64).log2()
+                } else {
+                    1.0
+                }
+            })
+            .collect();
+
+        // Reusable buffers for the level loop — one alloc per infer call, reused across levels
+        let mut pid_freq_buf: Vec<u32> = Vec::new();
+        let mut pid_costs_buf: Vec<f64> = Vec::new();
+
         for level in 1..self.grammar.levels.len() {
             let prev_patterns: Vec<&Pattern> =
                 self.grammar.levels[level - 1].patterns.iter().collect();
@@ -707,51 +752,52 @@ impl Spma {
             }
 
             // Frequency-based costs for this level's pattern IDs
-            let n_prev_pats = self.grammar.levels[level - 1].patterns.len();
             let total_pid: u32 = pid_seq.len() as u32;
-            let mut pid_freq: HashMap<u32, u32> = HashMap::new();
-            for &pid in &pid_seq {
-                *pid_freq.entry(pid).or_insert(0) += 1;
-            }
             let max_pid = self.grammar.levels[level - 1]
                 .patterns
                 .iter()
                 .map(|p| p.id as usize + 1)
                 .max()
                 .unwrap_or(1);
-            let pid_costs: Vec<f64> = (0..max_pid as u32)
-                .map(|id| {
-                    let freq = pid_freq.get(&id).copied().unwrap_or(1);
-                    -((freq as f64 / total_pid.max(1) as f64).log2())
-                })
-                .collect();
+            let max_ref = pid_seq.iter().map(|&id| id as usize + 1).max().unwrap_or(1);
+            let buf_len = max_ref.max(max_pid);
+            let fallback_pid = level_fallback_costs[level - 1];
+            let total_f = total_pid.max(1) as f64;
+            let log2_total = total_f.log2();
+
+            // Grow-only resize; cheaper than fresh alloc each level
+            pid_freq_buf.resize(buf_len, 0u32);
+            pid_costs_buf.resize(buf_len, fallback_pid);
+
+            pid_freq_buf[..buf_len].fill(0);
+            for &pid in &pid_seq {
+                if (pid as usize) < buf_len {
+                    pid_freq_buf[pid as usize] += 1;
+                }
+            }
+            for id in 0..max_pid {
+                let freq = pid_freq_buf[id].max(1);
+                pid_costs_buf[id] = -((freq as f64).log2() - log2_total);
+            }
+            pid_costs_buf[max_pid..buf_len].fill(fallback_pid);
 
             let raw_level_cost: f64 = pid_seq
                 .iter()
-                .map(|&id| pid_costs.get(id as usize).copied().unwrap_or(1.0))
+                .map(|&id| pid_costs_buf.get(id as usize).copied().unwrap_or(1.0))
                 .sum();
 
             let level_patterns: Vec<&Pattern> =
                 self.grammar.levels[level].patterns.iter().collect();
             let level_index = &self.grammar.levels[level].symbol_index;
 
-            // Extend pid_costs to cover all pattern IDs referenced
-            let max_ref = pid_seq.iter().map(|&id| id as usize + 1).max().unwrap_or(1);
-            let mut pid_costs_ext = pid_costs.clone();
-            let fallback_pid = if n_prev_pats > 1 {
-                (n_prev_pats as f64).log2()
-            } else {
-                1.0
-            };
-            pid_costs_ext.resize(max_ref.max(pid_costs_ext.len()), fallback_pid);
-
             let level_results = beam_search(
                 &pid_seq,
                 &level_patterns,
                 level_index,
                 self.beam_k,
-                &pid_costs_ext,
+                &pid_costs_buf[..buf_len],
             );
+
             let best_level = level_results.into_iter().next();
             let lc = best_level
                 .as_ref()
@@ -811,8 +857,11 @@ impl Spma {
             }
         }
 
+        let threshold = self.grammar.e_distribution.threshold;
+        let level_thresholds = self.grammar.e_distribution.level_thresholds.clone();
         self.grammar.e_distribution =
-            crate::model::EDistribution::fit(e_norms, 0.0, level_e_norms_vecs);
+            crate::model::EDistribution::fit(e_norms, threshold, level_e_norms_vecs);
+        self.grammar.e_distribution.level_thresholds = level_thresholds;
     }
 }
 
