@@ -91,8 +91,23 @@ jobs:
       - name: Publish spma to crates.io
         run: cargo publish --locked -p spma --token ${{ secrets.CARGO_TOKEN }}
 
-      - name: Wait for spma to be available
-        run: sleep 30
+      - name: Wait for spma to be indexed on crates.io
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 -p spma | jq -r '.packages[0].version')
+          echo "Waiting for spma v${VERSION} to appear in crates.io index..."
+          for i in $(seq 1 20); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/spma/${VERSION}")
+            if [ "$STATUS" = "200" ]; then
+              echo "spma v${VERSION} is available."
+              break
+            fi
+            echo "Attempt $i: not yet available (HTTP $STATUS), retrying in 15s..."
+            sleep 15
+          done
+          if [ "$STATUS" != "200" ]; then
+            echo "Timed out waiting for spma v${VERSION} on crates.io"
+            exit 1
+          fi
 
       - name: Publish spma-cli to crates.io
         run: cargo publish --locked -p spma-cli --token ${{ secrets.CARGO_TOKEN }}
