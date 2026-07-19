@@ -160,7 +160,6 @@ same commit as the change.
 
 Do not implement these without an explicit plan:
 
-- `GrammarLevel::corpus_e_norms` field (currently dead — never written)
 - Structure-of-Arrays layout for `PatternStore` (perf item B)
 - Parallel training (perf item D)
 - SIMD symbol comparison (perf item E)
