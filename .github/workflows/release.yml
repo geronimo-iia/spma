@@ -88,5 +88,11 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Publish to crates.io
+      - name: Publish spma to crates.io
         run: cargo publish --locked -p spma --token ${{ secrets.CARGO_TOKEN }}
+
+      - name: Wait for spma to be available
+        run: sleep 30
+
+      - name: Publish spma-cli to crates.io
+        run: cargo publish --locked -p spma-cli --token ${{ secrets.CARGO_TOKEN }}

@@ -7,6 +7,7 @@ description = "CLI for spma — unsupervised anomaly detection for discrete even
 license = "MIT OR Apache-2.0"
 authors = ["Jerome Guibert"]
 repository = "https://github.com/geronimo-iia/spma"
+readme = "README.md"
 
 [[bin]]
 name = "spma"
