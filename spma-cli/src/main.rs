@@ -81,6 +81,25 @@ enum Command {
         level_threshold: Vec<(usize, f64)>,
     },
 
+    /// Extend an existing model with a new batch of sequences without cold start
+    Retrain {
+        /// Path to saved model (modified in place or written to --output)
+        #[arg(short, long)]
+        model: String,
+
+        /// New corpus to train on (one sequence per line, tokens space-separated)
+        #[arg(short, long)]
+        corpus: String,
+
+        /// Output path; if omitted, overwrites --model
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Override anomaly threshold after retraining
+        #[arg(short, long)]
+        threshold: Option<f64>,
+    },
+
     /// Reload a model, replay corpus to refit e_distribution, save updated model
     Recalibrate {
         /// Path to saved model (modified in place or written to --output)
@@ -190,7 +209,7 @@ fn print_grammar_human(
     level_filter: Option<usize>,
     model_path: &str,
 ) -> Result<()> {
-    let grammar = &spma.grammar;
+    let grammar = &spma.grammar();
     let interner = &grammar.interner;
     let dist = &grammar.e_distribution;
 
@@ -209,7 +228,7 @@ fn print_grammar_human(
 
     // Atom costs
     writeln!(out, "Atom costs:")?;
-    for (i, &cost) in spma.atom_costs.iter().enumerate() {
+    for (i, &cost) in spma.atom_costs().iter().enumerate() {
         let name = interner.name(i as u32);
         let bar_len = (cost * 10.0).round() as usize;
         let bar = "█".repeat(bar_len);
@@ -315,7 +334,7 @@ fn print_grammar_json(
 ) -> Result<()> {
     use serde_json::{json, Value};
 
-    let grammar = &spma.grammar;
+    let grammar = &spma.grammar();
     let interner = &grammar.interner;
     let dist = &grammar.e_distribution;
     let n_atoms = interner.len();
@@ -324,7 +343,7 @@ fn print_grammar_json(
     let atoms: Vec<Value> = (0..n_atoms)
         .map(|i| {
             let name = interner.name(i as u32);
-            let cost = spma.atom_costs.get(i).copied().unwrap_or(0.0);
+            let cost = spma.atom_costs().get(i).copied().unwrap_or(0.0);
             json!({"id": i, "name": name, "cost": cost})
         })
         .collect();
@@ -452,7 +471,7 @@ fn print_grammar_json(
         })
         .collect();
 
-    let atom_costs: Vec<f64> = spma.atom_costs.clone();
+    let atom_costs: Vec<f64> = spma.atom_costs().to_vec();
 
     let output = json!({
         "model_path": model_path,
@@ -501,6 +520,9 @@ fn main() -> Result<()> {
                 .map(|seq| seq.iter().map(String::as_str).collect())
                 .collect();
 
+            spma::validate_corpus(&corpus_refs)
+                .map_err(|e| anyhow::anyhow!("corpus validation failed: {e}"))?;
+
             let mut spma = Spma::new(beam);
             spma.set_max_induced_gap(max_gap);
             spma.train(&corpus_refs);
@@ -517,7 +539,7 @@ fn main() -> Result<()> {
             eprintln!(
                 "trained: {} sequences, {} grammar levels, threshold={:.4}",
                 raw.len(),
-                spma.grammar.levels.len(),
+                spma.grammar().levels.len(),
                 dist.threshold
             );
         }
@@ -556,6 +578,12 @@ fn main() -> Result<()> {
                 .into_iter()
                 .filter(|l| !l.is_empty())
                 .collect();
+
+            for (i, line) in lines.iter().enumerate() {
+                let tokens: Vec<&str> = line.split_whitespace().collect();
+                spma::validate_sequence(&tokens)
+                    .map_err(|e| anyhow::anyhow!("line {}: {e}", i + 1))?;
+            }
 
             let results: Vec<(Vec<String>, spma::engine::InferResult)> = lines
                 .par_iter()
@@ -603,6 +631,56 @@ fn main() -> Result<()> {
             }
         }
 
+        Command::Retrain {
+            model,
+            corpus,
+            output,
+            threshold,
+        } => {
+            let f = File::open(&model).with_context(|| format!("open model: {model}"))?;
+            let mut spma =
+                Spma::load(BufReader::new(f)).with_context(|| format!("load model: {model}"))?;
+
+            let raw = read_corpus(&corpus)?;
+            if raw.is_empty() {
+                anyhow::bail!("corpus is empty: {corpus}");
+            }
+            let corpus_refs: Vec<Vec<&str>> = raw
+                .iter()
+                .map(|seq| seq.iter().map(String::as_str).collect())
+                .collect();
+
+            spma::validate_corpus(&corpus_refs)
+                .map_err(|e| anyhow::anyhow!("corpus validation failed: {e}"))?;
+
+            let levels_before = spma.grammar().levels.len();
+            spma.retrain(&corpus_refs);
+
+            if let Some(t) = threshold {
+                spma.set_anomaly_threshold(t);
+            }
+
+            let out_path = output.as_deref().unwrap_or(&model);
+            let out_dir = std::path::Path::new(out_path)
+                .parent()
+                .unwrap_or(std::path::Path::new("."));
+            let tmp_path = out_dir.join(format!(".spma_retrain_tmp_{}", std::process::id()));
+            let f = File::create(&tmp_path)
+                .with_context(|| format!("create tmp output: {}", tmp_path.display()))?;
+            spma.save(BufWriter::new(f))
+                .with_context(|| format!("save model to tmp: {}", tmp_path.display()))?;
+            std::fs::rename(&tmp_path, out_path)
+                .with_context(|| format!("rename {} -> {out_path}", tmp_path.display()))?;
+
+            eprintln!(
+                "retrained: {} sequences, levels {} -> {}, threshold={:.4}",
+                raw.len(),
+                levels_before,
+                spma.grammar().levels.len(),
+                spma.e_distribution().threshold,
+            );
+        }
+
         Command::Recalibrate {
             model,
             corpus,
@@ -621,6 +699,9 @@ fn main() -> Result<()> {
                 .iter()
                 .map(|seq| seq.iter().map(String::as_str).collect())
                 .collect();
+
+            spma::validate_corpus(&corpus_refs)
+                .map_err(|e| anyhow::anyhow!("corpus validation failed: {e}"))?;
 
             spma.recalibrate(&corpus_refs);
 

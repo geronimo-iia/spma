@@ -6,4 +6,4 @@ pub(crate) mod beam;
 pub mod engine;
 pub mod model;
 
-pub use engine::{InferResult, Spma};
+pub use engine::{validate_corpus, validate_sequence, InferResult, Spma, MAX_BITMASK_SYMBOLS};

@@ -1,0 +1,31 @@
+[package]
+name = "spma-cli"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.75"
+description = "CLI for spma — unsupervised anomaly detection for discrete event sequences"
+license = "MIT OR Apache-2.0"
+authors = ["Jerome Guibert"]
+repository = "https://github.com/geronimo-iia/spma"
+
+[[bin]]
+name = "spma"
+path = "src/main.rs"
+
+[dependencies]
+spma = { path = "../spma" }
+anyhow = "1.0"
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
+serde_json = "1.0"
+mimalloc = { version = "0.1", default-features = false }
+
+[lints.rust]
+unused_imports = "warn"
+unused_variables = "warn"
+dead_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "allow"
+nursery = "allow"

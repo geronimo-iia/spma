@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use crate::model::{Pattern, SymbolIndex};
 
-use crate::model::Pattern;
+pub const MAX_BITMASK_SYMBOLS: usize = 512;
 
 // ── MatchEvent / MatchArena ───────────────────────────────────────────────────
 
@@ -47,23 +47,34 @@ impl MatchArena {
 
 // ── PartialAlignment ──────────────────────────────────────────────────────────
 
+const MAX_PATS: usize = 128;
+
 #[derive(Clone)]
 struct PartialAlignment {
-    old_cursors: HashMap<usize, usize>,
-    new_cursors: HashMap<usize, usize>,
+    new_cursors: [u16; MAX_PATS], // pattern_idx → new_pos; u16::MAX = absent
+    covered_new: [u64; 8],        // bitmask; bit i = new[i] covered; covers up to 512 symbols
+    new_len: usize,               // stored for finalize
     max_covered_new: usize,
-    covered_new: Vec<bool>,
     cd: f64,
     log_tail: Option<u32>,
 }
 
 impl PartialAlignment {
-    fn new(new_len: usize) -> Self {
+    fn new(new_len: usize, n_pats: usize) -> Self {
+        // assert!, not debug_assert: violations would silently corrupt results
+        assert!(
+            new_len <= MAX_BITMASK_SYMBOLS,
+            "beam_search: sequence length {new_len} exceeds {MAX_BITMASK_SYMBOLS}-symbol bitmask limit"
+        );
+        assert!(
+            n_pats <= MAX_PATS,
+            "beam_search: pattern count {n_pats} exceeds {MAX_PATS}-pattern cursor limit"
+        );
         Self {
-            old_cursors: HashMap::new(),
-            new_cursors: HashMap::new(),
+            new_cursors: [u16::MAX; MAX_PATS],
+            covered_new: [0u64; 8],
+            new_len,
             max_covered_new: 0,
-            covered_new: vec![false; new_len],
             cd: 0.0,
             log_tail: None,
         }
@@ -81,11 +92,14 @@ impl PartialAlignment {
         symbol_cost: f64,
         arena: &mut MatchArena,
     ) -> Self {
+        debug_assert!(
+            new_pos < u16::MAX as usize,
+            "new_pos {new_pos} overflows u16"
+        );
         let mut next = self.clone();
-        next.covered_new[new_pos] = true;
+        next.covered_new[new_pos / 64] |= 1u64 << (new_pos % 64);
         next.cd += symbol_cost;
-        next.old_cursors.insert(old_idx, old_pos);
-        next.new_cursors.insert(old_idx, new_pos);
+        next.new_cursors[old_idx] = new_pos as u16;
         if new_pos > next.max_covered_new {
             next.max_covered_new = new_pos;
         }
@@ -107,21 +121,22 @@ impl PartialAlignment {
         patterns: &[&Pattern],
     ) -> bool {
         let pat = patterns[old_idx];
-        match self.new_cursors.get(&old_idx) {
-            None => old_pos == 0 && new_pos >= self.max_covered_new,
-            Some(&prev_new) => {
-                if old_pos == 0 {
-                    // Fresh restart of same pattern — must not overlap prior matches.
-                    new_pos >= self.max_covered_new
-                } else if pat.gaps.is_empty() {
-                    // Advancing within a contiguous pattern.
-                    new_pos == prev_new + 1
-                } else {
-                    // Advancing within a gap pattern — check constraint.
-                    let gap = &pat.gaps[old_pos - 1];
-                    let skip = new_pos.saturating_sub(prev_new + 1);
-                    skip >= gap.min && skip <= gap.max
-                }
+        let prev_new_raw = self.new_cursors[old_idx];
+        if prev_new_raw == u16::MAX {
+            old_pos == 0 && new_pos >= self.max_covered_new
+        } else {
+            let prev_new = prev_new_raw as usize;
+            if old_pos == 0 {
+                // Fresh restart of same pattern — must not overlap prior matches.
+                new_pos >= self.max_covered_new
+            } else if pat.gaps.is_empty() {
+                // Advancing within a contiguous pattern.
+                new_pos == prev_new + 1
+            } else {
+                // Advancing within a gap pattern — check constraint.
+                let gap = &pat.gaps[old_pos - 1];
+                let skip = new_pos.saturating_sub(prev_new + 1);
+                skip >= gap.min && skip <= gap.max
             }
         }
     }
@@ -130,13 +145,17 @@ impl PartialAlignment {
         let e_cost: f64 = new
             .iter()
             .enumerate()
-            .filter(|&(i, _)| !self.covered_new[i])
+            .filter(|&(i, _)| self.covered_new[i / 64] & (1u64 << (i % 64)) == 0)
             .map(|(_, &id)| costs[id as usize])
             .sum();
         let match_log = arena.collect(self.log_tail);
+        // Reconstruct Vec<bool> for RawAlignment (consumed by alignment.rs)
+        let covered: Vec<bool> = (0..self.new_len)
+            .map(|i| self.covered_new[i / 64] & (1u64 << (i % 64)) != 0)
+            .collect();
         RawAlignment {
             match_log,
-            covered: self.covered_new,
+            covered,
             e_cost,
             cd: self.cd,
         }
@@ -158,6 +177,7 @@ pub struct RawAlignment {
 pub fn beam_search(
     new: &[u32],
     old: &[&Pattern],
+    index: &SymbolIndex,
     beam_k: usize,
     costs: &[f64],
 ) -> Vec<RawAlignment> {
@@ -165,20 +185,8 @@ pub fn beam_search(
         return vec![];
     }
 
-    // For each symbol ID: which (old_idx, old_pos) pairs contain it
-    let mut symbol_to_old: HashMap<u32, Vec<(usize, usize)>> = HashMap::new();
-    for (oi, pat) in old.iter().enumerate() {
-        for (pos, sym_ref) in pat.symbols.iter().enumerate() {
-            let id = match sym_ref {
-                crate::model::SymbolRef::Atom(id) => *id,
-                crate::model::SymbolRef::Pattern(id) => *id,
-            };
-            symbol_to_old.entry(id).or_default().push((oi, pos));
-        }
-    }
-
     let mut arena = MatchArena::new();
-    let mut candidates = vec![PartialAlignment::new(new.len())];
+    let mut candidates = vec![PartialAlignment::new(new.len(), old.len())];
 
     for (p, &sym) in new.iter().enumerate() {
         let sym_cost = costs[sym as usize];
@@ -187,11 +195,17 @@ pub fn beam_search(
         for candidate in &candidates {
             next_candidates.push(candidate.extend_skip());
 
-            if let Some(matches) = symbol_to_old.get(&sym) {
+            let matches = index.get(sym);
+            if !matches.is_empty() {
                 for &(oi, q) in matches {
-                    if candidate.can_extend(oi, q, p, old) {
-                        next_candidates
-                            .push(candidate.extend_match(oi, q, p, sym_cost, &mut arena));
+                    if candidate.can_extend(oi as usize, q as usize, p, old) {
+                        next_candidates.push(candidate.extend_match(
+                            oi as usize,
+                            q as usize,
+                            p,
+                            sym_cost,
+                            &mut arena,
+                        ));
                     }
                 }
             }
@@ -201,9 +215,9 @@ pub fn beam_search(
             b.cd.partial_cmp(&a.cd)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| {
-                    let a_cov = a.covered_new.iter().filter(|&&c| c).count();
-                    let b_cov = b.covered_new.iter().filter(|&&c| c).count();
-                    b_cov.cmp(&a_cov)
+                    let b_ones: u32 = b.covered_new.iter().map(|w| w.count_ones()).sum();
+                    let a_ones: u32 = a.covered_new.iter().map(|w| w.count_ones()).sum();
+                    b_ones.cmp(&a_ones)
                 })
                 .then_with(|| a.covered_new.cmp(&b.covered_new))
         });
@@ -224,10 +238,61 @@ pub fn beam_search(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Pattern, SymbolRef};
+    use crate::model::{Pattern, SymbolIndex, SymbolRef};
+
+    #[test]
+    #[should_panic(expected = "exceeds 512-symbol bitmask limit")]
+    fn sequence_too_long_panics() {
+        // 513 symbols — must panic with bitmask limit message
+        let new: Vec<u32> = vec![0u32; 513];
+        let costs = vec![1.0f64; 1];
+        let old: Vec<Pattern> = vec![];
+        let old_refs: Vec<&Pattern> = old.iter().collect();
+        let idx = SymbolIndex::build(&old);
+        let _ = beam_search(&new, &old_refs, &idx, 5, &costs);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds 128-pattern cursor limit")]
+    fn too_many_patterns_panics() {
+        // 129 patterns — must panic with cursor limit message
+        let new = vec![0u32];
+        let costs = vec![1.0f64; 1];
+        let patterns: Vec<Pattern> = (0..129)
+            .map(|i| Pattern::new_contiguous(i as u32, vec![SymbolRef::Atom(0)], 0))
+            .collect();
+        let old_refs: Vec<&Pattern> = patterns.iter().collect();
+        let idx = SymbolIndex::build(&patterns);
+        let _ = beam_search(&new, &old_refs, &idx, 5, &costs);
+    }
+
+    #[test]
+    fn bitmask_coverage_round_trip() {
+        let mut mask = [0u64; 8];
+        // set bits 0, 2, 5
+        mask[0] |= 1u64 << 0;
+        mask[0] |= 1u64 << 2;
+        mask[0] |= 1u64 << 5;
+        assert!(mask[0] & (1u64 << 0) != 0);
+        assert!(mask[0] & (1u64 << 1) == 0);
+        assert!(mask[0] & (1u64 << 2) != 0);
+        assert!(mask[0] & (1u64 << 5) != 0);
+        assert!(mask[0] & (1u64 << 6) == 0);
+        let total: u32 = mask.iter().map(|w| w.count_ones()).sum();
+        assert_eq!(total, 3);
+        // test cross-word bit (bit 64 = word 1, bit 0)
+        mask[1] |= 1u64 << 0;
+        let total2: u32 = mask.iter().map(|w| w.count_ones()).sum();
+        assert_eq!(total2, 4);
+    }
 
     fn contiguous_pattern(id: u32, atoms: &[u32]) -> Pattern {
         Pattern::new_contiguous(id, atoms.iter().map(|&a| SymbolRef::Atom(a)).collect(), 0)
+    }
+
+    fn index_for(patterns: &[&Pattern]) -> SymbolIndex {
+        let owned: Vec<Pattern> = patterns.iter().map(|p| (*p).clone()).collect();
+        SymbolIndex::build(&owned)
     }
 
     #[test]
@@ -280,7 +345,8 @@ mod tests {
         let old: Vec<Pattern> = vec![];
         let old_refs: Vec<&Pattern> = old.iter().collect();
         let costs = vec![1.0, 2.0, 3.0];
-        let results = beam_search(&new, &old_refs, 5, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 5, &costs);
         assert_eq!(results.len(), 1);
         assert!(results[0].covered.iter().all(|&c| !c));
         assert_eq!(results[0].cd, 0.0);
@@ -292,7 +358,8 @@ mod tests {
         let p0 = contiguous_pattern(0, &[0u32]);
         let old_refs = vec![&p0];
         let costs = vec![2.0, 3.0];
-        let results = beam_search(&new, &old_refs, 5, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 5, &costs);
         assert!(!results.is_empty());
         let best = &results[0];
         assert!(best.covered[0]);
@@ -306,7 +373,8 @@ mod tests {
         let p0 = contiguous_pattern(0, &[0u32, 2u32]);
         let old_refs = vec![&p0];
         let costs = vec![1.0, 1.0, 1.0];
-        let results = beam_search(&new, &old_refs, 10, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 10, &costs);
         let best = &results[0];
         assert!(
             !best.covered[2],
@@ -321,7 +389,8 @@ mod tests {
         let p0 = contiguous_pattern(0, &[0u32, 1u32]);
         let old_refs = vec![&p0];
         let costs = vec![1.0, 1.0, 1.0];
-        let results = beam_search(&new, &old_refs, 10, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 10, &costs);
         let best = &results[0];
         assert!(best.covered[0], "A at new[0] should be covered");
         assert!(best.covered[1], "B at new[1] should be covered");
@@ -336,7 +405,8 @@ mod tests {
         let p1 = contiguous_pattern(1, &[2u32, 3u32]);
         let old_refs = vec![&p0, &p1];
         let costs = vec![1.0, 1.0, 1.0, 1.0];
-        let results = beam_search(&new, &old_refs, 20, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 20, &costs);
         let best = &results[0];
         assert_eq!(
             best.e_cost, 0.0,
@@ -353,7 +423,8 @@ mod tests {
         let p1 = contiguous_pattern(1, &[2u32, 3u32]);
         let old_refs = vec![&p0, &p1];
         let costs = vec![1.0, 1.0, 1.0, 1.0];
-        let results = beam_search(&new, &old_refs, 20, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 20, &costs);
         let best = &results[0];
         assert!(
             best.e_cost > 0.0,
@@ -369,7 +440,8 @@ mod tests {
         let p0 = contiguous_pattern(0, &[0u32]);
         let old_refs = vec![&p0];
         let costs = vec![1.0, 1.0];
-        let results = beam_search(&new, &old_refs, 10, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 10, &costs);
         let best = &results[0];
         assert!(best.covered[0], "A at new[0] should be covered");
         assert!(!best.covered[1], "B at new[1] should not be covered");
@@ -398,7 +470,8 @@ mod tests {
         let p0 = gap_pattern(0, &[0u32, 2u32], 2);
         let old_refs = vec![&p0];
         let costs = vec![1.0, 1.0, 1.0];
-        let results = beam_search(&new, &old_refs, 10, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 10, &costs);
         let best = &results[0];
         assert!(best.covered[0], "A at new[0] must be covered");
         assert!(
@@ -419,7 +492,8 @@ mod tests {
         let p0 = gap_pattern(0, &[0u32, 4u32], 2);
         let old_refs = vec![&p0];
         let costs = vec![1.0; 5];
-        let results = beam_search(&new, &old_refs, 10, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 10, &costs);
         let best = &results[0];
         assert!(
             !best.covered[4] || !best.covered[0],
@@ -437,7 +511,8 @@ mod tests {
         let p0 = gap_pattern(0, &[0u32, 2u32], 2);
         let old_refs = vec![&p0];
         let costs = vec![1.0; 3];
-        let results = beam_search(&new, &old_refs, 10, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 10, &costs);
         let best = &results[0];
         // A at new[1] starts a fresh match (old_pos=0), B at new[0] can't follow
         // So at most one of A/B is covered (A alone from a single-symbol perspective)
@@ -452,7 +527,8 @@ mod tests {
         let p0 = contiguous_pattern(0, &[0u32, 1u32]);
         let old_refs = vec![&p0];
         let costs = vec![1.0, 2.0];
-        let results = beam_search(&new, &old_refs, 5, &costs);
+        let idx = index_for(&old_refs);
+        let results = beam_search(&new, &old_refs, &idx, 5, &costs);
         let best = &results[0];
         assert_eq!(best.match_log.len(), 2);
         assert_eq!(best.match_log[0].new_pos, 0);
@@ -464,7 +540,8 @@ mod tests {
     // Scenarios 1-7: integration-level beam correctness (migrated from tests/beam_correctness.rs)
 
     fn best_result(new: &[u32], patterns: &[&Pattern], k: usize, costs: &[f64]) -> RawAlignment {
-        let mut results = beam_search(new, patterns, k, costs);
+        let idx = index_for(patterns);
+        let mut results = beam_search(new, patterns, &idx, k, costs);
         results.sort_by(|a, b| {
             b.cd.partial_cmp(&a.cd)
                 .unwrap_or(std::cmp::Ordering::Equal)

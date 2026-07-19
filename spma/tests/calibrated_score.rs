@@ -21,7 +21,7 @@ fn identical_corpus_all_e_norm_zero() {
         );
     }
 
-    let pct = spma.grammar.e_distribution.percentile(1e-10);
+    let pct = spma.grammar().e_distribution.percentile(1e-10);
     assert!(
         (pct - 1.0).abs() < 1e-10,
         "all training e_norms are 0.0 → percentile(1e-10) must be 1.0, got {}",
@@ -118,7 +118,7 @@ fn level_costs_len_matches_grammar_levels() {
     spma.train(&c);
 
     let result = spma.infer(&seq);
-    let n_levels = spma.grammar.levels.len();
+    let n_levels = spma.grammar().levels.len();
 
     assert_eq!(
         result.level_costs.len(),
@@ -184,7 +184,7 @@ fn per_level_threshold_fallback_to_global() {
 
     // level_thresholds empty → is_anomaly uses global threshold only
     assert!(
-        spma.grammar.e_distribution.level_thresholds.is_empty(),
+        spma.grammar().e_distribution.level_thresholds.is_empty(),
         "level_thresholds must be empty after train"
     );
     let result = spma.infer(&["A", "B", "C"]);
@@ -196,12 +196,12 @@ fn per_level_threshold_fallback_to_global() {
     // set_level_threshold extends vec correctly
     spma.set_level_threshold(2, 0.5);
     assert_eq!(
-        spma.grammar.e_distribution.level_thresholds.len(),
+        spma.grammar().e_distribution.level_thresholds.len(),
         3,
         "level_thresholds must be resized to level+1"
     );
     assert!(
-        (spma.grammar.e_distribution.level_thresholds[2] - 0.5).abs() < 1e-12,
+        (spma.grammar().e_distribution.level_thresholds[2] - 0.5).abs() < 1e-12,
         "level_thresholds[2] must be 0.5"
     );
 }
@@ -242,5 +242,199 @@ fn set_anomaly_threshold_gates_is_anomaly() {
         result_zero.is_anomaly,
         "threshold=0.0 with e_norm={}: must be anomaly",
         result_zero.e_norm
+    );
+}
+
+// Scenario 28 — recalibrate_preserves_threshold
+#[test]
+fn recalibrate_preserves_threshold() {
+    let c = corpus(vec!["A", "B", "C"], 10);
+    let mut spma = Spma::new(10);
+    spma.train(&c);
+
+    spma.set_anomaly_threshold(0.42);
+    let before = spma.grammar().e_distribution.threshold;
+    assert!(
+        (before - 0.42).abs() < 1e-12,
+        "threshold must be 0.42 before recalibrate"
+    );
+
+    let recal = corpus(vec!["A", "B", "C"], 5);
+    spma.recalibrate(&recal);
+
+    let after = spma.grammar().e_distribution.threshold;
+    assert!(
+        (after - 0.42).abs() < 1e-12,
+        "recalibrate must preserve threshold=0.42, got {}",
+        after
+    );
+}
+
+// Scenario 29 — recalibrate_preserves_level_thresholds
+#[test]
+fn recalibrate_preserves_level_thresholds() {
+    let c = corpus(vec!["A", "B", "C", "A", "B", "C"], 10);
+    let mut spma = Spma::new(10);
+    spma.train(&c);
+
+    spma.set_level_threshold(1, 0.77);
+    let before = spma
+        .grammar()
+        .e_distribution
+        .level_thresholds
+        .get(1)
+        .copied();
+    assert_eq!(
+        before,
+        Some(0.77),
+        "level_thresholds[1] must be 0.77 before recalibrate"
+    );
+
+    let recal = corpus(vec!["A", "B", "C", "A", "B", "C"], 5);
+    spma.recalibrate(&recal);
+
+    let after = spma
+        .grammar()
+        .e_distribution
+        .level_thresholds
+        .get(1)
+        .copied();
+    assert_eq!(
+        after,
+        Some(0.77),
+        "recalibrate must preserve level_thresholds[1]=0.77, got {:?}",
+        after
+    );
+}
+
+// Scenario 30 — recalibrate_rebuilds_distribution
+#[test]
+fn recalibrate_rebuilds_distribution() {
+    // Train on [A B C], recalibrate on novel sequences.
+    // e_distribution should change (sorted_e_norms updated), but threshold preserved.
+    let c = corpus(vec!["A", "B", "C"], 10);
+    let mut spma = Spma::new(10);
+    spma.train(&c);
+
+    spma.set_anomaly_threshold(0.99);
+
+    // Recalibrate on sequences with novel symbols — e_norms will be nonzero.
+    let novel = corpus(vec!["X", "Y", "Z"], 5);
+    spma.recalibrate(&novel);
+
+    // threshold preserved
+    assert!(
+        (spma.grammar().e_distribution.threshold - 0.99).abs() < 1e-12,
+        "threshold must survive recalibrate on novel corpus, got {}",
+        spma.grammar().e_distribution.threshold
+    );
+
+    // distribution rebuilt: infer on training seq should have different percentile rank
+    // (novel corpus produces higher e_norms → known seq now ranks lower)
+    let result = spma.infer(&["X", "Y", "Z"]);
+    assert!(
+        result.e_norm > 0.0,
+        "novel seq must have e_norm > 0 after recalibrate on novel corpus"
+    );
+}
+
+// Scenario 32 — validate_corpus_accepts_short_sequences
+#[test]
+fn validate_corpus_accepts_short_sequences() {
+    let corpus = vec![vec!["A", "B", "C"], vec!["X", "Y"]];
+    assert!(spma::validate_corpus(&corpus).is_ok());
+}
+
+// Scenario 33 — validate_corpus_rejects_overlong_sequence
+#[test]
+fn validate_corpus_rejects_overlong_sequence() {
+    let long_seq: Vec<&str> = vec!["A"; 513];
+    let corpus = vec![vec!["A", "B"], long_seq];
+    let result = spma::validate_corpus(&corpus);
+    assert!(
+        result.is_err(),
+        "validate_corpus must reject sequences > 512 symbols"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("513"),
+        "error message must mention the offending length, got: {msg}"
+    );
+    assert!(
+        msg.contains("512"),
+        "error message must mention the limit, got: {msg}"
+    );
+}
+
+// Scenario 34 — validate_sequence_accepts_normal
+#[test]
+fn validate_sequence_accepts_normal() {
+    let seq = vec!["A"; 512];
+    assert!(
+        spma::validate_sequence(&seq).is_ok(),
+        "512 symbols must be accepted"
+    );
+}
+
+// Scenario 35 — validate_sequence_rejects_overlong
+#[test]
+fn validate_sequence_rejects_overlong() {
+    let seq = vec!["A"; 513];
+    let result = spma::validate_sequence(&seq);
+    assert!(
+        result.is_err(),
+        "validate_sequence must reject sequences > 512 symbols"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("513"),
+        "error message must mention the offending length, got: {msg}"
+    );
+    assert!(
+        msg.contains("512"),
+        "error message must mention the limit, got: {msg}"
+    );
+}
+
+// Scenario 36 — validate_sequence_accepts_empty
+#[test]
+fn validate_sequence_accepts_empty() {
+    assert!(
+        spma::validate_sequence(&[]).is_ok(),
+        "empty sequence must be accepted"
+    );
+}
+
+// Scenario 31 — infer_buffer_reuse_stable_across_sequences
+#[test]
+fn infer_buffer_reuse_stable_across_sequences() {
+    // Grow-only pid_freq_buf/pid_costs_buf are reused across sequences in one infer call.
+    // If stale data leaks between sequences, results for identical sequences will differ.
+    let c = corpus(vec!["A", "B", "C"], 20);
+    let mut spma = Spma::new(10);
+    spma.train(&c);
+
+    // Infer same sequence twice — results must be identical (deterministic).
+    let r1 = spma.infer(&["A", "B", "C"]);
+    let r2 = spma.infer(&["A", "B", "C"]);
+    assert!(
+        (r1.e_norm - r2.e_norm).abs() < 1e-12,
+        "identical sequences must produce identical e_norm: {} vs {}",
+        r1.e_norm,
+        r2.e_norm
+    );
+    assert_eq!(
+        r1.is_anomaly, r2.is_anomaly,
+        "identical sequences must produce identical is_anomaly"
+    );
+
+    // Infer two different sequences back-to-back — buffer from first must not contaminate second.
+    let ra = spma.infer(&["A", "B", "C"]);
+    let rb = spma.infer(&["X", "Y", "Z"]);
+    assert!(
+        rb.e_norm > ra.e_norm,
+        "novel seq e_norm ({}) must exceed known seq e_norm ({})",
+        rb.e_norm,
+        ra.e_norm
     );
 }

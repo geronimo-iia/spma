@@ -128,6 +128,46 @@ impl Pattern {
 
 // ── GrammarLevel ──────────────────────────────────────────────────────────────
 
+// ── SymbolIndex ───────────────────────────────────────────────────────────────
+
+/// Inverted index: `symbol_id → [(pattern_idx, position_in_pattern)]`.
+///
+/// Built from a `GrammarLevel`'s patterns; not serialized (derived from patterns).
+/// `pattern_idx` is the position in the `patterns` vec, matching the `old_idx`
+/// used in `can_extend`. Both `Atom(id)` and `Pattern(id)` are keyed by raw `u32`.
+#[derive(Debug, Clone, Default)]
+pub struct SymbolIndex {
+    occurrences: Vec<Vec<(u32, u16)>>,
+}
+
+impl SymbolIndex {
+    pub fn build(patterns: &[Pattern]) -> Self {
+        let mut occurrences: Vec<Vec<(u32, u16)>> = Vec::new();
+        for (pidx, pat) in patterns.iter().enumerate() {
+            for (pos, sym) in pat.symbols.iter().enumerate() {
+                let id = match sym {
+                    SymbolRef::Atom(id) => *id,
+                    SymbolRef::Pattern(id) => *id,
+                } as usize;
+                if id >= occurrences.len() {
+                    occurrences.resize(id + 1, Vec::new());
+                }
+                occurrences[id].push((pidx as u32, pos as u16));
+            }
+        }
+        Self { occurrences }
+    }
+
+    pub fn get(&self, symbol_id: u32) -> &[(u32, u16)] {
+        self.occurrences
+            .get(symbol_id as usize)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+}
+
+// ── GrammarLevel ──────────────────────────────────────────────────────────────
+
 /// All patterns induced at one grammar level, plus calibration data.
 ///
 /// `levels[0]` = atom level (base patterns from raw sequences).
@@ -136,11 +176,22 @@ impl Pattern {
 pub struct GrammarLevel {
     /// Patterns induced at this level.
     pub patterns: Vec<Pattern>,
+    /// Inverted index over `patterns`; not serialized, rebuilt on load.
+    #[serde(skip)]
+    pub symbol_index: SymbolIndex,
 }
 
 impl GrammarLevel {
     pub fn new(patterns: Vec<Pattern>) -> Self {
-        Self { patterns }
+        let symbol_index = SymbolIndex::build(&patterns);
+        Self {
+            patterns,
+            symbol_index,
+        }
+    }
+
+    pub fn rebuild_index(&mut self) {
+        self.symbol_index = SymbolIndex::build(&self.patterns);
     }
 }
 
@@ -153,8 +204,7 @@ impl GrammarLevel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EDistribution {
     /// E_norm values from training sequences, sorted ascending.
-    /// Private — access via `percentile()`.
-    sorted_e_norms: Vec<f64>,
+    pub(crate) sorted_e_norms: Vec<f64>,
 
     /// Anomaly gate: `E_norm > threshold` → `is_anomaly`.
     /// Default: `0.0` — any uncovered symbol = anomaly (same as original `E > 0` behavior).

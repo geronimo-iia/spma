@@ -2,7 +2,8 @@
 
 Unsupervised anomaly detection for discrete event sequences via MDL-based grammar induction (SP Multiple Alignment).
 
-Learns a hierarchical grammar from normal sequences, then scores new sequences by their encoding cost E. Sequences that compress poorly — high `e_norm` — are anomalous. Validated on LogHub HDFS achieving **F1 = 0.893** unsupervised (1k training sequences, default threshold, preprocessed event traces — see [spma-experiments](https://github.com/geronimo-iia/spma-experiments)).
+Learns a hierarchical grammar from normal sequences, then scores new sequences by their encoding cost E. Sequences that compress poorly — high `e_norm` — are anomalous.
+
 
 ## Background
 
@@ -34,7 +35,7 @@ Three properties transfer from SP theory:
 
 ```toml
 [dependencies]
-spma = "0.1"
+spma = "0.2"
 ```
 
 Or:
@@ -87,17 +88,44 @@ model.save(BufWriter::new(File::create("model.json")?))?;
 let loaded = Spma::load(BufReader::new(File::open("model.json")?))?;
 ```
 
+## Retrain on new data
+
+```rust
+// Extend the grammar with new normal sequences — no cold start.
+// Prior patterns and atom frequencies are preserved.
+let new_corpus: Vec<Vec<&str>> = vec![
+    vec!["TRIP", "BREAKER_OPEN", "OVERHEAT", "BACKUP_RELAY"],
+    // ... more sequences
+];
+model.retrain(&new_corpus);
+```
+
 ## Recalibrate thresholds
 
 ```rust
 // Refit e_distribution on a larger normal corpus without retraining the grammar.
 // Useful when you train on a small corpus for speed then collect more normal data.
+// User-set threshold and level_thresholds are preserved across recalibration.
 let new_corpus: Vec<Vec<&str>> = vec![
     vec!["TRIP", "BREAKER_OPEN", "UNDERVOLTAGE", "BACKUP_RELAY"],
     // ... more normal sequences
 ];
 model.recalibrate(&new_corpus);
 ```
+
+## Validate before training
+
+Sequences longer than 512 symbols cannot be processed (bitmask limit). Validate before calling `train`/`retrain`/`recalibrate`:
+
+```rust
+use spma::{validate_corpus, validate_sequence};
+
+validate_corpus(&corpus).map_err(|e| format!("corpus error: {e}"))?;
+// or for a single sequence:
+validate_sequence(&tokens).map_err(|e| format!("sequence error: {e}"))?;
+```
+
+The CLI validates automatically and exits with a clear error message. The lib functions are opt-in — callers control when validation runs.
 
 ## Examples
 
@@ -106,7 +134,7 @@ Runnable examples covering golden path, save/load, order detection, and threshol
 ## CLI quickstart
 
 ```sh
-cargo install spma
+cargo install spma-cli
 ```
 
 ```sh
@@ -117,8 +145,14 @@ spma train --corpus normal.txt --output model.json
 spma infer --model model.json --input sequences.txt
 spma infer --model model.json --json < sequences.txt
 
+# Extend existing model with new sequences (no cold start)
+spma retrain --model model.json --corpus new_normal.txt
+
 # Refit e_distribution without re-training
 spma recalibrate --model model.json --corpus new_normal.txt
+
+# Corpus and sequences are validated automatically — sequences > 512 symbols are rejected:
+# Error: corpus validation failed: sequence 3 has 513 symbols (limit: 512)
 
 # Inspect grammar
 spma grammar --model model.json
@@ -158,4 +192,6 @@ spma infer --model model.json --level-threshold 0:0.2 --level-threshold 1:0.5
 
 ## Benchmark results
 
-Full results including HDFS LogHub evaluation (F1 = 0.893, unsupervised, no labeled data used during training) — see [spma-experiments](https://github.com/geronimo-iia/spma-experiments).
+For now (2026), validated on LogHub HDFS: Precision=0.973, Recall=0.825, F1=0.893 — trained on 1k normal sequences, no labels, no embeddings, no feature vectors — see [spma-experiments](https://github.com/geronimo-iia/spma-experiments). There is still a lot to explore — broader datasets, deeper comparison, open questions.
+
+**Evaluation note**: results use identifier-based partitioning (log lines grouped by block ID before splitting). Chen et al. 2021 use an 80/20 chronological split with sliding window partitioning. The protocols differ — do not compare these F1 numbers directly against Chen et al. tables.

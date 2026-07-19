@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, release, "feat/**", "fix/**", "chore/**"]
   pull_request:
-    branches: [main]
+    branches: [main, release]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -26,16 +26,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: cargo fmt -- --check
+        run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --workspace -- -D warnings
 
       - name: Build
-        run: cargo build
+        run: cargo build --workspace
 
       - name: Test
-        run: cargo test --locked
+        run: cargo test --workspace --locked
 
       - name: Install cargo-audit
         if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'

@@ -28,16 +28,16 @@ fn gap_pattern_learned_and_matches_novel_middle() {
     );
 
     let trip_id = spma
-        .grammar
+        .grammar()
         .interner
         .get("TRIP")
         .expect("TRIP must be interned");
     let rest_id = spma
-        .grammar
+        .grammar()
         .interner
         .get("RESTORATION")
         .expect("RESTORATION must be interned");
-    let has_trip_restoration_pattern = spma.grammar.levels[0].patterns.iter().any(|p| {
+    let has_trip_restoration_pattern = spma.grammar().levels[0].patterns.iter().any(|p| {
         let has_trip = p
             .symbols
             .iter()

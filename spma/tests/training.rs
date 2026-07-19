@@ -15,12 +15,12 @@ fn repeated_sequences_grammar_nonempty_pattern_covers() {
     spma.train(&corpus);
 
     assert!(
-        spma.grammar.levels.len() >= 1,
+        spma.grammar().levels.len() >= 1,
         "expected at least 1 grammar level, got {}",
-        spma.grammar.levels.len()
+        spma.grammar().levels.len()
     );
 
-    let level0 = &spma.grammar.levels[0];
+    let level0 = &spma.grammar().levels[0];
     assert!(
         !level0.patterns.is_empty(),
         "level-0 patterns must not be empty"
@@ -50,10 +50,18 @@ fn varied_corpus_frequent_bigram_becomes_pattern() {
     let mut spma = Spma::new(5);
     spma.train(&corpus);
 
-    let a_id = spma.grammar.interner.get("A").expect("A must be interned");
-    let b_id = spma.grammar.interner.get("B").expect("B must be interned");
+    let a_id = spma
+        .grammar()
+        .interner
+        .get("A")
+        .expect("A must be interned");
+    let b_id = spma
+        .grammar()
+        .interner
+        .get("B")
+        .expect("B must be interned");
 
-    let level0 = &spma.grammar.levels[0];
+    let level0 = &spma.grammar().levels[0];
     let has_ab_prefix = level0.patterns.iter().any(|p| {
         if p.symbols.len() < 2 {
             return false;
@@ -78,11 +86,19 @@ fn rare_symbol_costs_more_than_frequent() {
     let mut spma = Spma::new(5);
     spma.train(&corpus);
 
-    let a_id = spma.grammar.interner.get("A").expect("A must be interned");
-    let b_id = spma.grammar.interner.get("B").expect("B must be interned");
+    let a_id = spma
+        .grammar()
+        .interner
+        .get("A")
+        .expect("A must be interned");
+    let b_id = spma
+        .grammar()
+        .interner
+        .get("B")
+        .expect("B must be interned");
 
-    let cost_a = spma.atom_costs[a_id as usize];
-    let cost_b = spma.atom_costs[b_id as usize];
+    let cost_a = spma.atom_costs()[a_id as usize];
+    let cost_b = spma.atom_costs()[b_id as usize];
 
     assert!(
         cost_a < cost_b,
@@ -111,17 +127,17 @@ fn gap_pattern_induced_from_varying_middle() {
     spma.train(&corpus);
 
     let trip_id = spma
-        .grammar
+        .grammar()
         .interner
         .get("TRIP")
         .expect("TRIP must be interned");
     let rest_id = spma
-        .grammar
+        .grammar()
         .interner
         .get("RESTORATION")
         .expect("RESTORATION must be interned");
 
-    let level0 = &spma.grammar.levels[0];
+    let level0 = &spma.grammar().levels[0];
 
     let has_gap_pattern = level0.patterns.iter().any(|p| {
         p.symbols.len() == 2
@@ -151,12 +167,12 @@ fn multilevel_level1_pattern_induced() {
     spma.train(&corpus);
 
     assert!(
-        spma.grammar.levels.len() >= 2,
+        spma.grammar().levels.len() >= 2,
         "expected >= 2 grammar levels, got {}",
-        spma.grammar.levels.len()
+        spma.grammar().levels.len()
     );
 
-    let level1 = &spma.grammar.levels[1];
+    let level1 = &spma.grammar().levels[1];
     assert!(
         !level1.patterns.is_empty(),
         "level-1 patterns must not be empty"
@@ -176,5 +192,125 @@ fn multilevel_level1_pattern_induced() {
         result.e_norm <= 0.5,
         "known repeated sequence e_norm must be <= 0.5, got {}",
         result.e_norm
+    );
+}
+
+// ── Scenario 19 ───────────────────────────────────────────────────────────────
+
+#[test]
+fn atom_freq_persists_across_save_load() {
+    let corpus = vec![vec!["A", "B", "A"], vec!["A", "B", "C"]];
+    let mut spma = Spma::new(5);
+    spma.train(&corpus);
+
+    let a_id = spma.grammar().interner.get("A").unwrap();
+    let b_id = spma.grammar().interner.get("B").unwrap();
+    let c_id = spma.grammar().interner.get("C").unwrap();
+
+    // A appears 3 times, B 2 times, C 1 time, total 6
+    assert_eq!(spma.atom_freq_for_test()[&a_id], 3, "A freq must be 3");
+    assert_eq!(spma.atom_freq_for_test()[&b_id], 2, "B freq must be 2");
+    assert_eq!(spma.atom_freq_for_test()[&c_id], 1, "C freq must be 1");
+    assert_eq!(spma.total_symbol_count_for_test(), 6, "total must be 6");
+
+    // serde roundtrip preserves the counts
+    let mut buf = Vec::new();
+    spma.save(std::io::BufWriter::new(&mut buf)).unwrap();
+    let loaded = Spma::load(std::io::BufReader::new(buf.as_slice())).unwrap();
+
+    assert_eq!(
+        loaded.atom_freq_for_test()[&a_id],
+        3,
+        "loaded A freq must be 3"
+    );
+    assert_eq!(
+        loaded.total_symbol_count_for_test(),
+        6,
+        "loaded total must be 6"
+    );
+}
+
+// ── Scenario 20 ───────────────────────────────────────────────────────────────
+
+#[test]
+fn retrain_adds_new_patterns() {
+    let corpus1 = repeat(vec!["A", "B"], 10);
+    let mut spma = Spma::new(5);
+    spma.train(&corpus1);
+    let n_before = spma.grammar().levels[0].patterns.len();
+
+    let corpus2 = repeat(vec!["C", "D"], 10);
+    spma.retrain(&corpus2);
+    let n_after = spma.grammar().levels[0].patterns.len();
+
+    assert!(
+        n_after >= n_before,
+        "retrain must not shrink grammar: before={n_before} after={n_after}"
+    );
+}
+
+#[test]
+fn retrain_preserves_existing_patterns() {
+    let corpus1 = repeat(vec!["A", "B"], 10);
+    let mut spma = Spma::new(5);
+    spma.train(&corpus1);
+
+    let ids_before: Vec<u32> = spma.grammar().levels[0]
+        .patterns
+        .iter()
+        .map(|p| p.id)
+        .collect();
+
+    let corpus2 = repeat(vec!["C", "D"], 10);
+    spma.retrain(&corpus2);
+
+    let ids_after: Vec<u32> = spma.grammar().levels[0]
+        .patterns
+        .iter()
+        .map(|p| p.id)
+        .collect();
+    for id in &ids_before {
+        assert!(
+            ids_after.contains(id),
+            "pattern id={id} was lost after retrain"
+        );
+    }
+}
+
+#[test]
+fn retrain_known_sequences_stay_normal() {
+    let corpus1 = repeat(vec!["A", "B", "C"], 10);
+    let mut spma = Spma::new(5);
+    spma.train(&corpus1);
+
+    let corpus2 = repeat(vec!["D", "E", "F"], 10);
+    spma.retrain(&corpus2);
+
+    let r1 = spma.infer(&["A", "B", "C"]);
+    let r2 = spma.infer(&["D", "E", "F"]);
+    assert!(
+        r1.e_norm < 0.5,
+        "corpus1 seq anomalous after retrain: e_norm={}",
+        r1.e_norm
+    );
+    assert!(
+        r2.e_norm < 0.5,
+        "corpus2 seq anomalous after retrain: e_norm={}",
+        r2.e_norm
+    );
+}
+
+#[test]
+fn train_is_still_cold_start() {
+    let corpus1 = repeat(vec!["A", "B"], 10);
+    let corpus2 = repeat(vec!["C", "D"], 10);
+    let mut spma = Spma::new(5);
+    spma.train(&corpus1);
+    spma.train(&corpus2);
+
+    let a_id = spma.grammar().interner.get("A");
+    assert!(
+        a_id.is_none(),
+        "train twice: A should not be in grammar after second train"
     );
 }
