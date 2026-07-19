@@ -163,9 +163,8 @@ Do not implement these without an explicit plan:
 - Structure-of-Arrays layout for `PatternStore` (perf item B)
 - Parallel training (perf item D)
 - SIMD symbol comparison (perf item E)
-- Examples `fault_detection.rs`, `ordered_sequences.rs` — compile but output
-  may not match doc comments exactly; do not update doc comments to match
-  observed output without running the example first
+- Examples `fault_detection.rs`, `ordered_sequences.rs` — doc comments match
+  current output; run example before changing expected output in doc comments
 
 ---
 

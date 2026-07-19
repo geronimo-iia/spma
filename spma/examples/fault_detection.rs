@@ -9,28 +9,28 @@
 //! P2(L0)  TRIP_A        .             .             .
 //! P1(L0)  .             BREAKER_OPEN  UNDERVOLTAGE  BACKUP_RELAY
 //! ---
-//! E: -0.0 bits   CD: 9.7 bits   T: -0.0 bits
+//! E: -0.0 bits   CD: 9.7 bits   T: 9.7 bits
 //! [ANOMALY]  e_norm=0.328  E=3.415  CD=+7.000  — Normal — variant
 //!          unmatched: OVERCURRENT
 //!         TRIP_B        BREAKER_OPEN  OVERCURRENT   BACKUP_RELAY
 //! P3(L0)  TRIP_B        .             .             .
 //! P0(L0)  .             BREAKER_OPEN  <1>           BACKUP_RELAY
 //! ---
-//! E: 3.4 bits   CD: 7.0 bits   T: 3.4 bits
+//! E: 3.4 bits   CD: 7.0 bits   T: 10.4 bits
 //! [ANOMALY]  e_norm=0.483  E=4.678  CD=+5.000  — Reordered (may not be detected with varied corpus)
 //!          unmatched: UNDERVOLTAGE, BACKUP_RELAY
 //!         BREAKER_OPEN  TRIP_A        UNDERVOLTAGE  BACKUP_RELAY
 //! P0(L0)  BREAKER_OPEN  .             .             .
 //! P2(L0)  .             TRIP_A        .             .
 //! ---
-//! E: 4.7 bits   CD: 5.0 bits   T: 4.7 bits
+//! E: 4.7 bits   CD: 5.0 bits   T: 9.7 bits
 //! [ANOMALY]  e_norm=0.328  E=3.415  CD=+7.000  — Anomaly — unknown fault type
 //!          unmatched: GROUNDFAULT
 //!         TRIP_A        BREAKER_OPEN  GROUNDFAULT   BACKUP_RELAY
 //! P2(L0)  TRIP_A        .             .             .
 //! P0(L0)  .             BREAKER_OPEN  <1>           BACKUP_RELAY
 //! ---
-//! E: 3.4 bits   CD: 7.0 bits   T: 3.4 bits
+//! E: 3.4 bits   CD: 7.0 bits   T: 10.4 bits
 //! [ANOMALY]  e_norm=1.000  E=10.245  CD=+0.000  — Anomaly — completely novel
 //!          unmatched: SENSOR_FAIL, WATCHDOG_RESET, REBOOT
 //!   SENSOR_FAIL     WATCHDOG_RESET  REBOOT
