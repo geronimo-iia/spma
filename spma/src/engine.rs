@@ -9,6 +9,36 @@ use crate::alignment::{build_alignment, Alignment};
 use crate::beam::{beam_search, RawAlignment};
 use crate::model::{Grammar, GrammarLevel, Pattern, SymbolRef};
 
+pub use crate::beam::MAX_BITMASK_SYMBOLS;
+
+/// Validate all sequences in a corpus fit within beam_search limits.
+/// Returns `Err` with a human-readable message on the first offending sequence.
+pub fn validate_corpus(corpus: &[Vec<&str>]) -> Result<(), String> {
+    for (i, seq) in corpus.iter().enumerate() {
+        if seq.len() > crate::beam::MAX_BITMASK_SYMBOLS {
+            return Err(format!(
+                "sequence {} has {} symbols (limit: {})",
+                i,
+                seq.len(),
+                crate::beam::MAX_BITMASK_SYMBOLS,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a single sequence fits within beam_search limits.
+pub fn validate_sequence(seq: &[&str]) -> Result<(), String> {
+    if seq.len() > crate::beam::MAX_BITMASK_SYMBOLS {
+        return Err(format!(
+            "sequence has {} symbols (limit: {})",
+            seq.len(),
+            crate::beam::MAX_BITMASK_SYMBOLS,
+        ));
+    }
+    Ok(())
+}
+
 // ── Public result types ───────────────────────────────────────────────────────
 
 pub struct InferResult {

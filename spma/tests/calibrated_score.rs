@@ -321,6 +321,52 @@ fn recalibrate_rebuilds_distribution() {
     );
 }
 
+// Scenario 32 — validate_corpus_accepts_short_sequences
+#[test]
+fn validate_corpus_accepts_short_sequences() {
+    let corpus = vec![
+        vec!["A", "B", "C"],
+        vec!["X", "Y"],
+    ];
+    assert!(spma::validate_corpus(&corpus).is_ok());
+}
+
+// Scenario 33 — validate_corpus_rejects_overlong_sequence
+#[test]
+fn validate_corpus_rejects_overlong_sequence() {
+    let long_seq: Vec<&str> = vec!["A"; 513];
+    let corpus = vec![
+        vec!["A", "B"],
+        long_seq,
+    ];
+    let result = spma::validate_corpus(&corpus);
+    assert!(result.is_err(), "validate_corpus must reject sequences > 512 symbols");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("513"),
+        "error message must mention the offending length, got: {msg}"
+    );
+    assert!(
+        msg.contains("512"),
+        "error message must mention the limit, got: {msg}"
+    );
+}
+
+// Scenario 34 — validate_sequence_accepts_normal
+#[test]
+fn validate_sequence_accepts_normal() {
+    let seq = vec!["A"; 512];
+    assert!(spma::validate_sequence(&seq).is_ok(), "512 symbols must be accepted");
+}
+
+// Scenario 35 — validate_sequence_rejects_overlong
+#[test]
+fn validate_sequence_rejects_overlong() {
+    let seq = vec!["A"; 513];
+    let result = spma::validate_sequence(&seq);
+    assert!(result.is_err());
+}
+
 // Scenario 31 — infer_buffer_reuse_stable_across_sequences
 #[test]
 fn infer_buffer_reuse_stable_across_sequences() {

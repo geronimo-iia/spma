@@ -1,5 +1,7 @@
 use crate::model::{Pattern, SymbolIndex};
 
+pub const MAX_BITMASK_SYMBOLS: usize = 512;
+
 // ── MatchEvent / MatchArena ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -61,8 +63,8 @@ impl PartialAlignment {
     fn new(new_len: usize, n_pats: usize) -> Self {
         // assert!, not debug_assert: violations would silently corrupt results
         assert!(
-            new_len <= 512,
-            "beam_search: sequence length {new_len} exceeds 512-symbol bitmask limit"
+            new_len <= MAX_BITMASK_SYMBOLS,
+            "beam_search: sequence length {new_len} exceeds {MAX_BITMASK_SYMBOLS}-symbol bitmask limit"
         );
         assert!(
             n_pats <= MAX_PATS,
