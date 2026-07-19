@@ -171,7 +171,6 @@ Do not implement these without an explicit plan:
 
 ## Key numbers to know
 
-- HDFS benchmark: F1 = 0.893 unsupervised (1k train, 446k infer)
 - Infer throughput after H+I: ~2.9× wall speedup vs baseline (42s vs 123s wall,
   16 cores, Apple Silicon)
 - Beam default: `beam_k = 10`
