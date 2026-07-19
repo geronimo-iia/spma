@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::model::{Pattern, SymbolIndex};
 
 // ── MatchEvent / MatchArena ───────────────────────────────────────────────────
@@ -49,21 +47,28 @@ impl MatchArena {
 
 #[derive(Clone)]
 struct PartialAlignment {
-    old_cursors: HashMap<usize, usize>,
-    new_cursors: HashMap<usize, usize>,
+    new_cursors: Vec<u16>, // pattern_idx → new_pos; u16::MAX = absent
+    covered_new: u128,     // bitmask; bit i = new[i] covered
+    new_len: usize,        // stored for finalize
     max_covered_new: usize,
-    covered_new: Vec<bool>,
     cd: f64,
     log_tail: Option<u32>,
 }
 
 impl PartialAlignment {
-    fn new(new_len: usize) -> Self {
+    fn new(new_len: usize, n_pats: usize) -> Self {
+        // assert!, not debug_assert: sequence > 128 would silently set wrong bits
+        assert!(
+            new_len <= 128,
+            "beam_search: sequence length {new_len} exceeds 128-symbol bitmask limit"
+        );
+        // Safety: beam_search returns early on empty input before calling new(),
+        // so new_len == 0 never reaches this assert.
         Self {
-            old_cursors: HashMap::new(),
-            new_cursors: HashMap::new(),
+            new_cursors: vec![u16::MAX; n_pats],
+            covered_new: 0u128,
+            new_len,
             max_covered_new: 0,
-            covered_new: vec![false; new_len],
             cd: 0.0,
             log_tail: None,
         }
@@ -81,11 +86,14 @@ impl PartialAlignment {
         symbol_cost: f64,
         arena: &mut MatchArena,
     ) -> Self {
+        debug_assert!(
+            new_pos < u16::MAX as usize,
+            "new_pos {new_pos} overflows u16"
+        );
         let mut next = self.clone();
-        next.covered_new[new_pos] = true;
+        next.covered_new |= 1u128 << new_pos;
         next.cd += symbol_cost;
-        next.old_cursors.insert(old_idx, old_pos);
-        next.new_cursors.insert(old_idx, new_pos);
+        next.new_cursors[old_idx] = new_pos as u16;
         if new_pos > next.max_covered_new {
             next.max_covered_new = new_pos;
         }
@@ -107,21 +115,22 @@ impl PartialAlignment {
         patterns: &[&Pattern],
     ) -> bool {
         let pat = patterns[old_idx];
-        match self.new_cursors.get(&old_idx) {
-            None => old_pos == 0 && new_pos >= self.max_covered_new,
-            Some(&prev_new) => {
-                if old_pos == 0 {
-                    // Fresh restart of same pattern — must not overlap prior matches.
-                    new_pos >= self.max_covered_new
-                } else if pat.gaps.is_empty() {
-                    // Advancing within a contiguous pattern.
-                    new_pos == prev_new + 1
-                } else {
-                    // Advancing within a gap pattern — check constraint.
-                    let gap = &pat.gaps[old_pos - 1];
-                    let skip = new_pos.saturating_sub(prev_new + 1);
-                    skip >= gap.min && skip <= gap.max
-                }
+        let prev_new_raw = self.new_cursors[old_idx];
+        if prev_new_raw == u16::MAX {
+            old_pos == 0 && new_pos >= self.max_covered_new
+        } else {
+            let prev_new = prev_new_raw as usize;
+            if old_pos == 0 {
+                // Fresh restart of same pattern — must not overlap prior matches.
+                new_pos >= self.max_covered_new
+            } else if pat.gaps.is_empty() {
+                // Advancing within a contiguous pattern.
+                new_pos == prev_new + 1
+            } else {
+                // Advancing within a gap pattern — check constraint.
+                let gap = &pat.gaps[old_pos - 1];
+                let skip = new_pos.saturating_sub(prev_new + 1);
+                skip >= gap.min && skip <= gap.max
             }
         }
     }
@@ -130,13 +139,17 @@ impl PartialAlignment {
         let e_cost: f64 = new
             .iter()
             .enumerate()
-            .filter(|&(i, _)| !self.covered_new[i])
+            .filter(|&(i, _)| self.covered_new & (1u128 << i) == 0)
             .map(|(_, &id)| costs[id as usize])
             .sum();
         let match_log = arena.collect(self.log_tail);
+        // Reconstruct Vec<bool> for RawAlignment (consumed by alignment.rs)
+        let covered: Vec<bool> = (0..self.new_len)
+            .map(|i| self.covered_new & (1u128 << i) != 0)
+            .collect();
         RawAlignment {
             match_log,
-            covered: self.covered_new,
+            covered,
             e_cost,
             cd: self.cd,
         }
@@ -167,7 +180,7 @@ pub fn beam_search(
     }
 
     let mut arena = MatchArena::new();
-    let mut candidates = vec![PartialAlignment::new(new.len())];
+    let mut candidates = vec![PartialAlignment::new(new.len(), old.len())];
 
     for (p, &sym) in new.iter().enumerate() {
         let sym_cost = costs[sym as usize];
@@ -195,11 +208,7 @@ pub fn beam_search(
         next_candidates.sort_by(|a, b| {
             b.cd.partial_cmp(&a.cd)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| {
-                    let a_cov = a.covered_new.iter().filter(|&&c| c).count();
-                    let b_cov = b.covered_new.iter().filter(|&&c| c).count();
-                    b_cov.cmp(&a_cov)
-                })
+                .then_with(|| b.covered_new.count_ones().cmp(&a.covered_new.count_ones()))
                 .then_with(|| a.covered_new.cmp(&b.covered_new))
         });
         next_candidates.truncate(beam_k);
@@ -220,6 +229,20 @@ pub fn beam_search(
 mod tests {
     use super::*;
     use crate::model::{Pattern, SymbolIndex, SymbolRef};
+
+    #[test]
+    fn bitmask_coverage_round_trip() {
+        let mut mask: u128 = 0;
+        mask |= 1u128 << 0;
+        mask |= 1u128 << 2;
+        mask |= 1u128 << 5;
+        assert!(mask & (1u128 << 0) != 0);
+        assert!(mask & (1u128 << 1) == 0);
+        assert!(mask & (1u128 << 2) != 0);
+        assert!(mask & (1u128 << 5) != 0);
+        assert!(mask & (1u128 << 6) == 0);
+        assert_eq!(mask.count_ones(), 3);
+    }
 
     fn contiguous_pattern(id: u32, atoms: &[u32]) -> Pattern {
         Pattern::new_contiguous(id, atoms.iter().map(|&a| SymbolRef::Atom(a)).collect(), 0)
